@@ -1,5 +1,6 @@
 export type Platform = 'ios' | 'android' | 'harmony' | 'web'
 export type LogLevel = 'trace' | 'debug' | 'info' | 'notice' | 'warning' | 'error' | 'critical'
+export type SourceStatus = 'online' | 'offline' | 'stale'
 
 export interface LogSource {
   sdkName?: string
@@ -29,6 +30,24 @@ export interface LogPage {
   hasMore: boolean
 }
 
+export interface Source {
+  platform: Platform
+  appId: string
+  sessionId: string
+  deviceId: string
+  lastSeenAt: string
+  sdkName?: string | null
+  sdkVersion?: string | null
+  status?: SourceStatus | null
+}
+
+export interface MetricsSnapshot {
+  ingestAcceptedTotal: number
+  sourceCount: number
+  totalRecords: number
+  droppedOverflow: number
+}
+
 export interface LogQueryFilters {
   platform?: string
   appId?: string
@@ -44,4 +63,7 @@ export interface InspectorState {
   records: LogRecord[]
   nextCursor: string | null
   isPolling: boolean
+  sources: Source[]
+  metrics: MetricsSnapshot | null
+  lastRefreshedAt: string | null
 }

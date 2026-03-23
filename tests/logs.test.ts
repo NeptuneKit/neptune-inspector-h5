@@ -1,6 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { buildLogsUrl, filterRecords, mergeRecords, normalizeBaseUrl } from '../src/logs'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { normalizeBaseUrl } from '../src/api'
+import { buildLogsUrl, fetchLogPage, filterRecords, mergeRecords } from '../src/logs'
 import type { LogRecord } from '../src/types'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('logs helpers', () => {
   it('normalizes base URLs', () => {
@@ -33,6 +38,17 @@ describe('logs helpers', () => {
     expect(url).toContain('afterId=42')
     expect(url).toContain('waitMs=1500')
     expect(url).toContain('limit=25')
+  })
+
+  it('fetches a log page snapshot', async () => {
+    const page = {
+      records: [sampleRecord(1)],
+      nextCursor: '1',
+      hasMore: false,
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => page }))
+
+    await expect(fetchLogPage('http://127.0.0.1:18765', { waitMs: 0 })).resolves.toEqual(page)
   })
 })
 

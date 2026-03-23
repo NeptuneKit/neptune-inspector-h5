@@ -1,15 +1,8 @@
+import { normalizeBaseUrl } from './api'
 import type { LogPage, LogQueryFilters, LogRecord } from './types'
 
 export const DEFAULT_LIMIT = 100
 export const DEFAULT_WAIT_MS = 1500
-
-export function normalizeBaseUrl(input: string): string {
-  const trimmed = input.trim()
-  if (!trimmed) {
-    return 'http://127.0.0.1:18765'
-  }
-  return trimmed.replace(/\/$/, '')
-}
 
 export function buildLogsUrl(baseUrl: string, options: { afterId?: string | null; waitMs?: number; limit?: number } = {}): string {
   const url = new URL('/v2/logs', normalizeBaseUrl(baseUrl))
