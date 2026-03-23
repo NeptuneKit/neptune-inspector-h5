@@ -22,10 +22,25 @@ describe('sources helpers', () => {
   })
 
   it('fetches sources as a snapshot array', async () => {
-    const response = { ok: true, json: async () => [sampleSource('web', 'demo.app', 'session-1', 'device-1')] }
+    const response = { ok: true, json: async () => [sampleSource('web', 'demo.app', 'session-1', 'device-1', '2026-03-23T23:02:00.000Z')] }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
 
     await expect(fetchSources('http://127.0.0.1:18765')).resolves.toHaveLength(1)
+  })
+
+  it('rejects malformed source payloads', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ([{
+        platform: 'web',
+        appId: 'demo.app',
+        sessionId: 'session-1',
+        deviceId: 'device-1',
+        lastSeenAt: 42,
+      }]),
+    }))
+
+    await expect(fetchSources('http://127.0.0.1:18765')).rejects.toThrow(/Invalid sources payload/)
   })
 })
 

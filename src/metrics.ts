@@ -1,4 +1,5 @@
-import { normalizeBaseUrl } from './api'
+import { fetchJson, normalizeBaseUrl } from './api'
+import { metricsSnapshotSchema } from './schemas'
 import type { MetricsSnapshot } from './types'
 
 export function buildMetricsUrl(baseUrl: string): string {
@@ -6,9 +7,5 @@ export function buildMetricsUrl(baseUrl: string): string {
 }
 
 export async function fetchMetrics(baseUrl: string): Promise<MetricsSnapshot> {
-  const response = await fetch(buildMetricsUrl(baseUrl))
-  if (!response.ok) {
-    throw new Error(`GET /v2/metrics failed with HTTP ${response.status}`)
-  }
-  return (await response.json()) as MetricsSnapshot
+  return fetchJson(buildMetricsUrl(baseUrl), metricsSnapshotSchema, 'metrics')
 }

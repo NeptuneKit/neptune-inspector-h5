@@ -1,4 +1,5 @@
-import { normalizeBaseUrl } from './api'
+import { fetchJson, normalizeBaseUrl } from './api'
+import { logPageSchema } from './schemas'
 import type { LogPage, LogQueryFilters, LogRecord } from './types'
 
 export const DEFAULT_LIMIT = 100
@@ -16,11 +17,7 @@ export function buildLogsUrl(baseUrl: string, options: { afterId?: string | null
 }
 
 export async function fetchLogPage(baseUrl: string, options: { afterId?: string | null; waitMs?: number; limit?: number } = {}): Promise<LogPage> {
-  const response = await fetch(buildLogsUrl(baseUrl, options))
-  if (!response.ok) {
-    throw new Error(`GET /v2/logs failed with HTTP ${response.status}`)
-  }
-  return (await response.json()) as LogPage
+  return fetchJson(buildLogsUrl(baseUrl, options), logPageSchema, 'logs')
 }
 
 export function filterRecords(records: LogRecord[], filters: LogQueryFilters): LogRecord[] {

@@ -23,4 +23,18 @@ describe('metrics helpers', () => {
 
     await expect(fetchMetrics('http://127.0.0.1:18765')).resolves.toEqual(snapshot)
   })
+
+  it('rejects malformed metrics payloads', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ingestAcceptedTotal: '12',
+        sourceCount: 3,
+        totalRecords: 99,
+        droppedOverflow: 1,
+      }),
+    }))
+
+    await expect(fetchMetrics('http://127.0.0.1:18765')).rejects.toThrow(/Invalid metrics payload/)
+  })
 })
