@@ -25,6 +25,21 @@ npm run build
 npm test
 ```
 
+## CI
+
+仓库配置了 GitHub Actions：
+
+- `push` 到 `main`
+- 所有 `pull_request`
+
+执行顺序固定为：
+
+```bash
+npm ci
+npm test
+npm run build
+```
+
 ## 对接约定
 
 - 默认 gateway：`http://127.0.0.1:18765`
