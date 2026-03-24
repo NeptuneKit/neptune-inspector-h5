@@ -25,6 +25,24 @@ npm run build
 npm test
 ```
 
+## 作为 macOS app 资源产物
+
+`neptune-inspector-h5` 的标准桌面资源产物是 `dist/`。
+
+本仓库提供统一构建脚本，供本地开发、CI 和 macOS 壳应用复用：
+
+```bash
+./scripts/build-desktop-assets.sh
+```
+
+脚本会执行 `npm ci`、清理旧的 `dist/`，再运行 `npm run build`，最终产出可直接被 `neptune-desktop-macos` 消费的静态资源目录。
+
+desktop app 会优先读取以下位置之一：
+
+1. `NEPTUNE_INSPECTOR_DIST` 指定的目录
+2. 本仓库构建出的 `dist/`
+3. 打包进 macOS app bundle 的 `Resources/inspector/`
+
 ## CI
 
 仓库配置了 GitHub Actions：
@@ -32,13 +50,14 @@ npm test
 - `push` 到 `main`
 - 所有 `pull_request`
 
-执行顺序固定为：
+构建和测试的入口是：
 
 ```bash
-npm ci
+./scripts/build-desktop-assets.sh
 npm test
-npm run build
 ```
+
+其中 `build-desktop-assets.sh` 会先执行 `npm ci`，再生成 `dist/`；CI 会在测试通过后上传 `dist/` artifact，供后续发布流水线或 macOS 打包步骤复用。
 
 ## 对接约定
 
