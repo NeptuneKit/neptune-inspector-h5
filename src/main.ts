@@ -1,8 +1,10 @@
 import { normalizeBaseUrl } from './api'
 import { buildLogsUrl, filterRecords, mergeRecords, pollLogPage } from './logs'
 import { buildMetricsUrl, fetchMetrics } from './metrics'
-import { buildSourcesUrl, fetchSources, sortSources } from './sources'
-import type { InspectorState, LogRecord, MetricsSnapshot, Source } from './types'
+import { buildClientsUrl, clientSelectionKey, fetchClients, saveSelectedClients, sortClients } from './clients'
+import { safeStorageGet, safeStorageSet } from './storage'
+import { createInspectorWsClient, mergeWsLogRecords } from './ws'
+import type { Client, InspectorState, LogRecord, MetricsSnapshot } from './types'
 import './styles.css'
 
 const app = document.querySelector<HTMLDivElement>('#app')
@@ -12,7 +14,7 @@ if (!app) {
 }
 
 const state: InspectorState = {
-  baseUrl: normalizeBaseUrl(localStorage.getItem('neptune-inspector-base-url') ?? ''),
+  baseUrl: normalizeBaseUrl(safeStorageGet('neptune-inspector-base-url') ?? ''),
   filters: {
     platform: '',
     appId: '',
@@ -24,12 +26,39 @@ const state: InspectorState = {
   records: [],
   nextCursor: null,
   isPolling: false,
-  sources: [],
+  clients: [],
+  selectedClientKeys: [],
+  clientsSyncMessage: '',
   metrics: null,
   lastRefreshedAt: null,
+  wsConnected: false,
+  wsStatus: 'connecting...',
+  wsTargetPlatforms: '',
+  wsTargetAppIds: '',
+  wsTargetSessionIds: '',
+  wsTargetDeviceIds: '',
+  wsOutboundMessage: '',
+  wsInbox: [],
 }
 
 let pollTimer: number | null = null
+let wsClient = createInspectorWsClient({
+  baseUrl: state.baseUrl,
+  onConnectionChange: ({ connected, status }) => {
+    state.wsConnected = connected
+    state.wsStatus = status
+    render()
+  },
+  onInboxItem: (item) => {
+    state.wsInbox = [item, ...state.wsInbox].slice(0, 20)
+    render()
+  },
+  onLogRecord: (record) => {
+    state.records = mergeWsLogRecords(state.records, [record])
+    state.lastRefreshedAt = new Date().toISOString()
+    render()
+  },
+})
 
 function setStatus(status: string, error: string | null = null): void {
   state.status = status
@@ -39,12 +68,20 @@ function setStatus(status: string, error: string | null = null): void {
 
 function setBaseUrl(value: string): void {
   state.baseUrl = normalizeBaseUrl(value)
-  localStorage.setItem('neptune-inspector-base-url', state.baseUrl)
+  safeStorageSet('neptune-inspector-base-url', state.baseUrl)
+  state.selectedClientKeys = []
+  state.clientsSyncMessage = ''
+  wsClient.setBaseUrl(state.baseUrl)
   render()
 }
 
 function setFilter(key: keyof InspectorState['filters'], value: string): void {
   state.filters[key] = value
+  render()
+}
+
+function setWsTargetField(key: 'wsTargetPlatforms' | 'wsTargetAppIds' | 'wsTargetSessionIds' | 'wsTargetDeviceIds', value: string): void {
+  state[key] = value
   render()
 }
 
@@ -55,8 +92,10 @@ function replaceLogs(records: LogRecord[], nextCursor: string | null): void {
   render()
 }
 
-function replaceSources(sources: Source[]): void {
-  state.sources = sortSources(sources)
+function replaceClients(clients: Client[]): void {
+  state.clients = sortClients(clients)
+  pruneSelectedClientKeys()
+  state.clientsSyncMessage = ''
   state.lastRefreshedAt = new Date().toISOString()
   render()
 }
@@ -67,6 +106,28 @@ function replaceMetrics(snapshot: MetricsSnapshot): void {
   render()
 }
 
+function pruneSelectedClientKeys(): void {
+  const availableKeys = new Set(state.clients.map((client) => clientSelectionKey(client)))
+  state.selectedClientKeys = state.selectedClientKeys.filter((key) => availableKeys.has(key))
+}
+
+function getSelectedClients(): Client[] {
+  const selectedKeys = new Set(state.selectedClientKeys)
+  return state.clients.filter((client) => selectedKeys.has(clientSelectionKey(client)))
+}
+
+function setClientSelected(key: string, selected: boolean): void {
+  const next = new Set(state.selectedClientKeys)
+  if (selected) {
+    next.add(key)
+  } else {
+    next.delete(key)
+  }
+  state.selectedClientKeys = Array.from(next)
+  state.clientsSyncMessage = ''
+  render()
+}
+
 async function loadLogsOnce(): Promise<void> {
   const page = await pollLogPage(state.baseUrl, state.nextCursor, 0)
   replaceLogs(page.records, page.nextCursor)
@@ -74,10 +135,10 @@ async function loadLogsOnce(): Promise<void> {
 
 async function refreshAll(): Promise<void> {
   setStatus('refreshing', null)
-  const [logsResult, sourcesResult, metricsResult] = await Promise.allSettled([
+  const [logsResult, clientsResult, metricsResult] = await Promise.allSettled([
     loadLogsOnce(),
-    fetchSources(state.baseUrl).then((sources) => {
-      replaceSources(sources)
+    fetchClients(state.baseUrl).then((clients) => {
+      replaceClients(clients)
     }),
     fetchMetrics(state.baseUrl).then((snapshot) => {
       replaceMetrics(snapshot)
@@ -89,8 +150,8 @@ async function refreshAll(): Promise<void> {
   if (logsResult.status === 'rejected') {
     errors.push(formatError('logs', logsResult.reason))
   }
-  if (sourcesResult.status === 'rejected') {
-    errors.push(formatError('sources', sourcesResult.reason))
+  if (clientsResult.status === 'rejected') {
+    errors.push(formatError('clients', clientsResult.reason))
   }
   if (metricsResult.status === 'rejected') {
     errors.push(formatError('metrics', metricsResult.reason))
@@ -102,7 +163,7 @@ async function refreshAll(): Promise<void> {
   }
 
   state.lastRefreshedAt = new Date().toISOString()
-  setStatus(`loaded ${state.records.length} logs, ${state.sources.length} sources`, null)
+  setStatus(`loaded ${state.records.length} logs, ${state.clients.length} clients`, null)
 }
 
 async function startPolling(): Promise<void> {
@@ -147,9 +208,38 @@ function clearLogs(): void {
   render()
 }
 
+async function submitSelectedClients(): Promise<void> {
+  const selectedClients = getSelectedClients()
+
+  try {
+    await saveSelectedClients(state.baseUrl, selectedClients)
+    state.clientsSyncMessage = `PUT /v2/clients:selected 已提交 ${selectedClients.length} 个客户端`
+  } catch (error) {
+    state.clientsSyncMessage = `PUT /v2/clients:selected 失败：${error instanceof Error ? error.message : String(error)}`
+  }
+
+  render()
+}
+
+function sendPingCommand(): void {
+  const result = wsClient.sendPing(
+    {
+      platforms: state.wsTargetPlatforms,
+      appIds: state.wsTargetAppIds,
+      sessionIds: state.wsTargetSessionIds,
+      deviceIds: state.wsTargetDeviceIds,
+    },
+  )
+
+  state.wsOutboundMessage = result.ok ? 'command.send(ping) 已下发' : result.error ?? 'command.send(ping) 失败'
+  render()
+}
+
 function render(): void {
   const visible = filterRecords(state.records, state.filters)
   const metrics = state.metrics
+  const selectedClients = getSelectedClients()
+  const selectedClientKeys = new Set(state.selectedClientKeys)
 
   app.innerHTML = `
     <main class="shell">
@@ -157,11 +247,12 @@ function render(): void {
         <div>
           <p class="eyebrow">NeptuneKit v2</p>
           <h1>H5 Inspector</h1>
-          <p class="subtitle">查看 logs、sources、metrics 三类网关快照；logs 保持长轮询增量刷新。</p>
+          <p class="subtitle">查看 logs、clients、metrics 快照；同时自动连接 Inspector WS，保留 Refresh All、clients:selected 提交和 logs 长轮询路径。</p>
         </div>
         <div class="status ${state.error ? 'status-error' : ''}">
           <span>${escapeHtml(state.status)}</span>
           <span>${escapeHtml(state.error ?? state.baseUrl)}</span>
+          <span>${escapeHtml(`${state.wsConnected ? 'ws connected' : 'ws offline'} · ${state.wsStatus}`)}</span>
         </div>
       </header>
 
@@ -178,9 +269,50 @@ function render(): void {
         </div>
       </section>
 
+      <section class="panel ws-panel">
+        <div class="list-header">
+          <div>
+            <h2>Inspector WS</h2>
+            <p>自动连接 <code>${escapeHtml(buildInspectorWsUrl(state.baseUrl))}</code>，发送 <code>hello(role=inspector)</code> 并保持 15s heartbeat。</p>
+          </div>
+          <code>${escapeHtml(state.wsStatus)}</code>
+        </div>
+
+        <div class="ws-layout">
+          <section class="ws-form">
+            <div class="ws-grid">
+              ${renderWsTargetInput('wsTargetPlatforms', 'Platforms', 'ios, android')}
+              ${renderWsTargetInput('wsTargetAppIds', 'App IDs', 'demo.app')}
+              ${renderWsTargetInput('wsTargetSessionIds', 'Session IDs', 'session-1')}
+              ${renderWsTargetInput('wsTargetDeviceIds', 'Device IDs', 'device-1')}
+            </div>
+            <div class="actions">
+              <button id="ws-send-ping-button">Send Ping</button>
+            </div>
+            <div class="ws-outbound">${escapeHtml(state.wsOutboundMessage || 'command.send(ping) 等待下发')}</div>
+          </section>
+
+          <section class="ws-inbox">
+            <div class="summary-grid compact">
+              <div><strong>${state.wsInbox.length}</strong><span>Inbox</span></div>
+              <div><strong>${state.wsConnected ? 'yes' : 'no'}</strong><span>Connected</span></div>
+              <div><strong>${state.wsTargetPlatforms || state.wsTargetAppIds || state.wsTargetSessionIds || state.wsTargetDeviceIds ? 'set' : '-'}</strong><span>Target</span></div>
+              <div><strong>${state.wsOutboundMessage ? 'ready' : '-'}</strong><span>Outbound</span></div>
+            </div>
+            <div class="records ws-records">
+              ${
+                state.wsInbox.length > 0
+                  ? state.wsInbox.map(renderWsInboxItem).join('')
+                  : '<div class="empty">No WS events yet.</div>'
+              }
+            </div>
+          </section>
+        </div>
+      </section>
+
       <section class="summary-strip">
         <div class="summary-chip"><strong>${state.records.length}</strong><span>Logs</span></div>
-        <div class="summary-chip"><strong>${state.sources.length}</strong><span>Sources</span></div>
+        <div class="summary-chip"><strong>${state.clients.length}</strong><span>Clients</span></div>
         <div class="summary-chip"><strong>${metrics ? metrics.totalRecords : '-'}</strong><span>Retained</span></div>
         <div class="summary-chip"><strong>${state.lastRefreshedAt ? escapeHtml(formatTime(state.lastRefreshedAt)) : '-'}</strong><span>Last Sync</span></div>
       </section>
@@ -190,7 +322,7 @@ function render(): void {
           <div class="list-header">
             <div>
               <h2>Logs</h2>
-              <p>当前页面只保留增量合并后的日志记录，并支持 <code>afterId + waitMs</code> 长轮询。</p>
+              <p>当前页面保留增量合并后的日志记录，并支持 <code>afterId + waitMs</code> 长轮询。</p>
             </div>
             <code>${escapeHtml(buildLogsUrl(state.baseUrl, { afterId: state.nextCursor, waitMs: 1500, limit: 100 }))}</code>
           </div>
@@ -217,21 +349,26 @@ function render(): void {
         <section class="panel list">
           <div class="list-header">
             <div>
-              <h2>Sources</h2>
-              <p>读取 <code>/v2/sources</code> 快照并按最近活跃时间排序。</p>
+              <h2>Clients</h2>
+              <p>读取 <code>/v2/clients</code> 快照并按最近活跃时间排序，勾选后通过 <code>PUT /v2/clients:selected</code> 全量提交。</p>
             </div>
-            <code>${escapeHtml(buildSourcesUrl(state.baseUrl))}</code>
+            <code>${escapeHtml(buildClientsUrl(state.baseUrl))}</code>
           </div>
 
-          <div class="summary-grid compact">
-            <div><strong>${state.sources.length}</strong><span>Known</span></div>
-            <div><strong>${state.sources.filter((item) => item.status === 'online').length}</strong><span>Online</span></div>
-            <div><strong>${state.sources.filter((item) => item.status === 'stale').length}</strong><span>Stale</span></div>
-            <div><strong>${state.sources.filter((item) => item.status === 'offline').length}</strong><span>Offline</span></div>
+          <div class="summary-grid compact clients-summary">
+            <div><strong>${state.clients.length}</strong><span>Total</span></div>
+            <div><strong>${selectedClients.length}</strong><span>Selected</span></div>
+            <div><strong>${state.clients.filter((item) => item.ttlSeconds > 0).length}</strong><span>TTL Set</span></div>
+            <div><strong>${state.clientsSyncMessage ? 'saved' : '-'}</strong><span>Submit</span></div>
           </div>
 
-          <div class="records sources">
-            ${state.sources.length > 0 ? state.sources.map(renderSource).join('') : '<div class="empty">No sources loaded.</div>'}
+          <div class="actions client-actions">
+            <button id="clients-save-button">Save Selected</button>
+          </div>
+          <div class="client-outbound">${escapeHtml(state.clientsSyncMessage || 'PUT /v2/clients:selected 等待提交')}</div>
+
+          <div class="records clients">
+            ${state.clients.length > 0 ? state.clients.map((client) => renderClient(client, selectedClientKeys.has(clientSelectionKey(client)))).join('') : '<div class="empty">No clients loaded.</div>'}
           </div>
         </section>
 
@@ -272,6 +409,15 @@ function render(): void {
   `
 
   bindEvents()
+}
+
+function renderWsTargetInput(key: keyof Pick<InspectorState, 'wsTargetPlatforms' | 'wsTargetAppIds' | 'wsTargetSessionIds' | 'wsTargetDeviceIds'>, label: string, placeholder: string): string {
+  return `
+    <label>
+      <span>${label}</span>
+      <input data-ws-target="${key}" value="${escapeHtml(state[key])}" placeholder="${placeholder}" />
+    </label>
+  `
 }
 
 function renderFilterInput(key: keyof InspectorState['filters'], label: string): string {
@@ -326,20 +472,36 @@ function renderLogRecord(record: LogRecord): string {
   `
 }
 
-function renderSource(source: Source): string {
+function renderClient(client: Client, selected: boolean): string {
   return `
-    <article class="record source-card">
-      <div class="record-head">
-        <strong>${escapeHtml(source.platform)}</strong>
-        <span>${escapeHtml(source.status ?? 'unknown')}</span>
+    <article class="record client-card ${selected ? 'client-card-selected' : ''}">
+      <div class="record-head client-card-head">
+        <label class="client-select">
+          <input type="checkbox" data-client-select="${escapeHtml(clientSelectionKey(client))}" ${selected ? 'checked' : ''} />
+          <strong>${escapeHtml(client.platform)}</strong>
+        </label>
+        <span>${escapeHtml(formatTime(client.lastSeenAt))}</span>
       </div>
-      <p>${escapeHtml(source.appId)}</p>
+      <p>${escapeHtml(client.appId)}</p>
       <dl>
-        <div><dt>sessionId</dt><dd>${escapeHtml(source.sessionId)}</dd></div>
-        <div><dt>deviceId</dt><dd>${escapeHtml(source.deviceId)}</dd></div>
-        <div><dt>lastSeenAt</dt><dd>${escapeHtml(source.lastSeenAt)}</dd></div>
-        <div><dt>sdk</dt><dd>${escapeHtml([source.sdkName, source.sdkVersion].filter(Boolean).join(' ') || '-')}</dd></div>
+        <div><dt>deviceId</dt><dd>${escapeHtml(client.deviceId)}</dd></div>
+        <div><dt>sessionId</dt><dd>${escapeHtml(client.sessionId)}</dd></div>
+        <div><dt>callbackEndpoint</dt><dd>${escapeHtml(client.callbackEndpoint)}</dd></div>
+        <div><dt>ttlSeconds</dt><dd>${escapeHtml(String(client.ttlSeconds))}</dd></div>
+        <div><dt>sdk</dt><dd>${escapeHtml([client.sdkName, client.sdkVersion].filter(Boolean).join(' ') || '-')}</dd></div>
       </dl>
+    </article>
+  `
+}
+
+function renderWsInboxItem(item: { timestamp: string; topic: string; message: string }): string {
+  return `
+    <article class="record ws-item">
+      <div class="record-head">
+        <strong>${escapeHtml(item.topic)}</strong>
+        <span>${escapeHtml(formatTime(item.timestamp))}</span>
+      </div>
+      <p>${escapeHtml(item.message)}</p>
     </article>
   `
 }
@@ -373,11 +535,33 @@ function bindEvents(): void {
   document.querySelector('#poll-button')?.addEventListener('click', () => void startPolling())
   document.querySelector('#stop-button')?.addEventListener('click', () => stopPolling())
   document.querySelector('#clear-button')?.addEventListener('click', () => clearLogs())
+  document.querySelector('#ws-send-ping-button')?.addEventListener('click', () => sendPingCommand())
+  document.querySelector('#clients-save-button')?.addEventListener('click', () => void submitSelectedClients())
 
   document.querySelectorAll<HTMLInputElement>('input[data-filter]').forEach((input) => {
     input.addEventListener('input', () => {
       const key = input.dataset.filter as keyof InspectorState['filters']
       setFilter(key, input.value)
+    })
+  })
+
+  document.querySelectorAll<HTMLInputElement>('input[data-ws-target]').forEach((input) => {
+    input.addEventListener('input', () => {
+      const key = input.dataset.wsTarget as keyof Pick<InspectorState, 'wsTargetPlatforms' | 'wsTargetAppIds' | 'wsTargetSessionIds' | 'wsTargetDeviceIds'>
+      if (!key) {
+        return
+      }
+      setWsTargetField(key, input.value)
+    })
+  })
+
+  document.querySelectorAll<HTMLInputElement>('input[data-client-select]').forEach((input) => {
+    input.addEventListener('change', () => {
+      const key = input.dataset.clientSelect
+      if (!key) {
+        return
+      }
+      setClientSelected(key, input.checked)
     })
   })
 }
@@ -408,5 +592,10 @@ function formatTime(value: string): string {
   }).format(date)
 }
 
-render()
-void refreshAll()
+function initialize(): void {
+  render()
+  wsClient.start()
+  void refreshAll()
+}
+
+initialize()

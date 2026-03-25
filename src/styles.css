@@ -112,6 +112,10 @@ h1 {
   gap: 0.25rem;
 }
 
+.status span {
+  overflow-wrap: anywhere;
+}
+
 .status-error {
   border-color: rgba(255, 125, 146, 0.3);
 }
@@ -132,6 +136,11 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1rem;
+}
+
+.ws-panel {
+  margin-top: 1rem;
+  padding: 1rem;
 }
 
 .actions {
@@ -179,6 +188,82 @@ h1 {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
   margin-top: 1rem;
+}
+
+.ws-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 1rem;
+}
+
+.ws-form,
+.ws-inbox {
+  min-width: 0;
+}
+
+.ws-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.ws-outbound {
+  margin-top: 0.9rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+}
+
+.ws-records {
+  max-height: 24rem;
+  overflow: auto;
+}
+
+.client-actions {
+  margin-bottom: 0.8rem;
+}
+
+.client-outbound {
+  margin-bottom: 0.9rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+}
+
+.clients {
+  max-height: 28rem;
+  overflow: auto;
+}
+
+.client-card-head {
+  align-items: center;
+}
+
+.client-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.client-select input {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.client-card-selected {
+  border-color: rgba(109, 226, 255, 0.35);
+  box-shadow: 0 0 0 1px rgba(109, 226, 255, 0.12) inset;
+}
+
+.clients-summary strong {
+  letter-spacing: 0.02em;
 }
 
 .list {
@@ -330,6 +415,10 @@ h1 {
   .dashboard {
     grid-template-columns: 1fr;
   }
+
+  .ws-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 960px) {
@@ -344,6 +433,7 @@ h1 {
   .summary-strip,
   .summary-grid,
   .filters,
+  .ws-grid,
   .record dl {
     grid-template-columns: 1fr 1fr;
   }
@@ -357,6 +447,7 @@ h1 {
   .summary-strip,
   .summary-grid,
   .filters,
+  .ws-grid,
   .record dl,
   .metrics-grid {
     grid-template-columns: 1fr;

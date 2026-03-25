@@ -41,6 +41,29 @@ export interface Source {
   status?: SourceStatus | null
 }
 
+export interface Client {
+  platform: Platform
+  appId: string
+  deviceId: string
+  sessionId: string
+  callbackEndpoint: string
+  lastSeenAt: string
+  ttlSeconds: number
+  sdkName?: string | null
+  sdkVersion?: string | null
+}
+
+export interface SelectedClientIdentity {
+  platform: Platform
+  appId: string
+  deviceId: string
+  sessionId: string
+}
+
+export interface SelectedClientsPayload {
+  selected: SelectedClientIdentity[]
+}
+
 export interface MetricsSnapshot {
   ingestAcceptedTotal: number
   sourceCount: number
@@ -63,7 +86,23 @@ export interface InspectorState {
   records: LogRecord[]
   nextCursor: string | null
   isPolling: boolean
-  sources: Source[]
+  clients: Client[]
+  selectedClientKeys: string[]
+  clientsSyncMessage: string
   metrics: MetricsSnapshot | null
   lastRefreshedAt: string | null
+  wsConnected: boolean
+  wsStatus: string
+  wsTargetPlatforms: string
+  wsTargetAppIds: string
+  wsTargetSessionIds: string
+  wsTargetDeviceIds: string
+  wsOutboundMessage: string
+  wsInbox: WsInboxItem[]
+}
+
+export interface WsInboxItem {
+  timestamp: string
+  topic: string
+  message: string
 }

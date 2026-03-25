@@ -45,6 +45,31 @@ export const sourceSchema = z.object({
 
 export const sourcesSchema = z.array(sourceSchema)
 
+export const clientSchema = z.object({
+  platform: platformSchema,
+  appId: z.string(),
+  deviceId: z.string(),
+  sessionId: z.string(),
+  callbackEndpoint: z.string(),
+  lastSeenAt: z.string(),
+  ttlSeconds: z.number().int().nonnegative(),
+  sdkName: z.string().nullable().optional(),
+  sdkVersion: z.string().nullable().optional(),
+})
+
+export const clientsSchema = z.array(clientSchema)
+
+export const selectedClientIdentitySchema = z.object({
+  platform: platformSchema,
+  appId: z.string(),
+  deviceId: z.string(),
+  sessionId: z.string(),
+})
+
+export const selectedClientsPayloadSchema = z.object({
+  selected: z.array(selectedClientIdentitySchema),
+})
+
 export const metricsSnapshotSchema = z.object({
   ingestAcceptedTotal: z.number(),
   sourceCount: z.number(),
