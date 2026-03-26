@@ -51,6 +51,22 @@ describe('logs helpers', () => {
     await expect(fetchLogPage('http://127.0.0.1:18765', { waitMs: 0 })).resolves.toEqual(page)
   })
 
+  it('treats missing nextCursor as null for compatibility', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        records: [sampleRecord(1)],
+        hasMore: false,
+      }),
+    }))
+
+    await expect(fetchLogPage('http://127.0.0.1:18765', { waitMs: 0 })).resolves.toEqual({
+      records: [sampleRecord(1)],
+      nextCursor: null,
+      hasMore: false,
+    })
+  })
+
   it('rejects malformed log payloads', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,

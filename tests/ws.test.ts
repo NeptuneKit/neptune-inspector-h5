@@ -197,12 +197,28 @@ describe('inspector ws client', () => {
       },
     })
   })
+
+  it('stops quietly while socket is still connecting', () => {
+    const socket = new FakeSocket('ws://127.0.0.1:18765/v2/ws')
+    const client = createInspectorWsClient({
+      baseUrl: 'http://127.0.0.1:18765',
+      webSocketFactory: () => socket,
+    })
+
+    client.start()
+    client.stop()
+
+    expect(socket.closeCalls).toBe(0)
+    socket.open()
+    expect(socket.closeCalls).toBe(1)
+  })
 })
 
 class FakeSocket {
   static instances: FakeSocket[] = []
 
   readonly sent: string[] = []
+  closeCalls = 0
   readyState = 0
   onopen: ((event: unknown) => void) | null = null
   onclose: ((event: unknown) => void) | null = null
@@ -227,6 +243,7 @@ class FakeSocket {
   }
 
   close(): void {
+    this.closeCalls += 1
     this.readyState = 3
     this.onclose?.({ code: 1000, reason: 'closed', wasClean: true })
   }

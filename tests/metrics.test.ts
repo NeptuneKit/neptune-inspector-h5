@@ -14,8 +14,10 @@ describe('metrics helpers', () => {
     const snapshot = {
       ingestAcceptedTotal: 12,
       sourceCount: 3,
-      totalRecords: 99,
-      droppedOverflow: 1,
+      retainedRecordCount: 0,
+      retentionMaxRecordCount: 0,
+      retentionMaxAgeSeconds: 0,
+      retentionDroppedTotal: 0,
     }
 
     const response = { ok: true, json: async () => snapshot }
@@ -30,8 +32,10 @@ describe('metrics helpers', () => {
       json: async () => ({
         ingestAcceptedTotal: '12',
         sourceCount: 3,
-        totalRecords: 99,
-        droppedOverflow: 1,
+        retainedRecordCount: 0,
+        retentionMaxRecordCount: 0,
+        retentionMaxAgeSeconds: 0,
+        retentionDroppedTotal: 0,
       }),
     }))
 
