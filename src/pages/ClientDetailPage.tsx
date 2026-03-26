@@ -13,7 +13,7 @@ function formatLogTimestamp(input: string): string {
   if (Number.isNaN(date.getTime())) {
     return input
   }
-  return date.toLocaleString('zh-CN', { hour12: false })
+  return date.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 export function ClientDetailPage() {
@@ -140,27 +140,37 @@ export function ClientDetailPage() {
   return (
     <main className="page detail-page">
       <header className="page-header">
-        <div>
-          <p className="eyebrow">Client Detail</p>
+        <div className="header-content">
+          <nav className="breadcrumb">
+            <Link className="breadcrumb-link" to="/">Neptune</Link>
+            <span className="breadcrumb-separator">/</span>
+            <span className="breadcrumb-current">Client Detail</span>
+          </nav>
           <h1>{identity.platform} · {identity.appId}</h1>
-          <p className="subtitle">session={identity.sessionId} · device={identity.deviceId}</p>
-        </div>
-        <div className="toolbar">
-          <span className={`status-pill ${wsConnected ? 'status-ok' : 'status-warn'}`}>{wsConnected ? 'ws online' : 'ws offline'}</span>
-          <button onClick={loadHistory}>刷新历史</button>
-          <button onClick={() => setRecords([])}>清空日志</button>
-          <Link className="link-btn" to="/">返回首页</Link>
+          <div className="header-meta">
+            <span className={`status-pill status-indicator ${wsConnected ? 'status-ok' : 'status-warn'}`}>
+              {wsConnected ? 'ONLINE' : 'OFFLINE'} · {wsStatus}
+            </span>
+            <span className="meta-chip"><span className="meta-key">platform</span><span className="meta-val">{identity.platform}</span></span>
+            <span className="meta-chip"><span className="meta-key">app</span><span className="meta-val">{identity.appId}</span></span>
+            <span className="meta-chip"><span className="meta-key">session</span><span className="meta-val">{identity.sessionId}</span></span>
+            <span className="meta-chip"><span className="meta-key">device</span><span className="meta-val">{identity.deviceId}</span></span>
+          </div>
         </div>
       </header>
 
       <section className="panel">
         <div className="panel-title-row">
           <h2>日志</h2>
-          <div className="toolbar">
-            <span>{wsStatus}</span>
-            <label className="toggle-row">
+          <div className="toolbar" style={{ gap: '0.75rem' }}>
+            <div className="button-group" style={{ height: '32px', padding: '3px' }}>
+              <button style={{ height: '24px' }} onClick={loadHistory}>刷新历史</button>
+              <div className="divider" />
+              <button style={{ height: '24px' }} onClick={() => setRecords([])}>清空日志</button>
+            </div>
+            <label className="checkbox-group">
               <input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} />
-              自动滚动
+              <span>自动滚动</span>
             </label>
           </div>
         </div>
@@ -174,19 +184,13 @@ export function ClientDetailPage() {
           {records.map((record) => (
             <article key={record.id} className="record">
               <div className="record-head">
+                <time dateTime={record.timestamp}>{formatLogTimestamp(record.timestamp)}</time>
                 <div className="record-head-left">
                   <strong className={`level-badge level-${record.level.toLowerCase()}`}>{record.level.toUpperCase()}</strong>
                   <span className="record-id">#{record.id}</span>
                 </div>
-                <time dateTime={record.timestamp}>{formatLogTimestamp(record.timestamp)}</time>
               </div>
               <p className="record-message">{record.message}</p>
-              <div className="record-tags">
-                <span className="meta-chip"><span className="meta-key">platform</span><span className="meta-val">{record.platform}</span></span>
-                <span className="meta-chip"><span className="meta-key">app</span><span className="meta-val">{record.appId}</span></span>
-                <span className="meta-chip"><span className="meta-key">session</span><span className="meta-val">{record.sessionId}</span></span>
-                <span className="meta-chip"><span className="meta-key">device</span><span className="meta-val">{record.deviceId}</span></span>
-              </div>
             </article>
           ))}
         </div>

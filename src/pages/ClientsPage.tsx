@@ -42,7 +42,7 @@ export function ClientsPage() {
     <main className="page clients-page">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Neptune Inspector</p>
+          <p className="eyebrow">Neptune</p>
           <h1>客户端列表</h1>
         </div>
         <div className="toolbar">
@@ -71,7 +71,7 @@ export function ClientsPage() {
             const clientKey = encodeClientKey(client)
             return (
               <article key={clientKey} className="client-card">
-                <div>
+                <div className="client-card-header">
                   <strong>{client.platform}</strong>
                   <p>{client.appId}</p>
                 </div>
