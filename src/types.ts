@@ -67,8 +67,10 @@ export interface SelectedClientsPayload {
 export interface MetricsSnapshot {
   ingestAcceptedTotal: number
   sourceCount: number
-  totalRecords: number
-  droppedOverflow: number
+  retainedRecordCount: number
+  retentionMaxRecordCount: number
+  retentionMaxAgeSeconds: number
+  retentionDroppedTotal: number
 }
 
 export interface LogQueryFilters {

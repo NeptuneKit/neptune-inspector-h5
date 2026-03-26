@@ -54,6 +54,7 @@ export interface InspectorWebSocketLike {
 
 const DEFAULT_HEARTBEAT_MS = 15_000
 const DEFAULT_RECONNECT_DELAYS_MS = [500, 1000, 2000, 4000, 8000]
+const CONNECTING_STATE = 0
 const OPEN_STATE = 1
 
 type InspectorWsEnvelope =
@@ -267,7 +268,17 @@ export class InspectorWsClient {
 
     const socket = this.socket
     this.socket = null
-    socket?.close()
+    if (socket?.readyState === CONNECTING_STATE) {
+      // Avoid browser console noise when closing a socket before handshake completes.
+      socket.onmessage = null
+      socket.onerror = null
+      socket.onclose = null
+      socket.onopen = () => {
+        socket.close()
+      }
+    } else {
+      socket?.close()
+    }
     this.notifyConnection(false, 'disconnected')
   }
 

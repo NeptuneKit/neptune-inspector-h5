@@ -28,7 +28,7 @@ export const logRecordSchema = z.object({
 
 export const logPageSchema = z.object({
   records: z.array(logRecordSchema),
-  nextCursor: z.string().nullable(),
+  nextCursor: z.string().nullable().optional().default(null),
   hasMore: z.boolean(),
 })
 
@@ -73,6 +73,8 @@ export const selectedClientsPayloadSchema = z.object({
 export const metricsSnapshotSchema = z.object({
   ingestAcceptedTotal: z.number(),
   sourceCount: z.number(),
-  totalRecords: z.number(),
-  droppedOverflow: z.number(),
+  retainedRecordCount: z.number(),
+  retentionMaxRecordCount: z.number(),
+  retentionMaxAgeSeconds: z.number(),
+  retentionDroppedTotal: z.number(),
 })
