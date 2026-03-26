@@ -3,3 +3,8 @@ dist/
 .vite/
 coverage/
 .DS_Store
+dist-test/
+dist-test-v5/
+test-results/
+client.png
+home.png
