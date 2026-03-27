@@ -78,3 +78,90 @@ export const metricsSnapshotSchema = z.object({
   retentionMaxAgeSeconds: z.number(),
   retentionDroppedTotal: z.number(),
 })
+
+export const viewTreeNodeSchema: z.ZodType<{
+  id: string
+  parentId: string | null
+  name: string
+  frame?: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  style?: {
+    opacity?: number
+    backgroundColor?: string
+    textColor?: string
+    typographyUnit?: 'dp'
+    sourceTypographyUnit?: 'pt' | 'sp' | 'fp' | 'vp' | 'px' | 'dp'
+    platformFontScale?: number
+    fontSize?: number
+    lineHeight?: number
+    letterSpacing?: number
+    fontWeight?: string
+    fontWeightRaw?: string
+    borderRadius?: number
+    borderWidth?: number
+    borderColor?: string
+    zIndex?: number
+  }
+  text?: string | null
+  visible?: boolean
+  children: unknown[]
+}> = z.object({
+  id: z.string(),
+  parentId: z.string().nullable(),
+  name: z.string(),
+  frame: z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number(),
+    height: z.number(),
+  }).optional(),
+  style: z.object({
+    opacity: z.number().optional(),
+    backgroundColor: z.string().optional(),
+    textColor: z.string().optional(),
+    typographyUnit: z.literal('dp').optional(),
+    sourceTypographyUnit: z.enum(['pt', 'sp', 'fp', 'vp', 'px', 'dp']).optional(),
+    platformFontScale: z.number().optional(),
+    fontSize: z.number().optional(),
+    lineHeight: z.number().optional(),
+    letterSpacing: z.number().optional(),
+    fontWeight: z.string().optional(),
+    fontWeightRaw: z.string().optional(),
+    fontFamily: z.string().optional(),
+    borderRadius: z.number().optional(),
+    borderWidth: z.number().optional(),
+    borderColor: z.string().optional(),
+    zIndex: z.number().optional(),
+    textAlign: z.string().optional(),
+    textContentAlign: z.string().optional(),
+    textOverflow: z.string().optional(),
+    wordBreak: z.string().optional(),
+    paddingTop: z.number().optional(),
+    paddingRight: z.number().optional(),
+    paddingBottom: z.number().optional(),
+    paddingLeft: z.number().optional(),
+  }).optional(),
+  text: z.string().nullable().optional(),
+  visible: z.boolean().optional(),
+  children: z.array(z.lazy(() => viewTreeNodeSchema)),
+})
+
+export const viewTreeSnapshotSchema = z.object({
+  snapshotId: z.string(),
+  capturedAt: z.string(),
+  platform: platformSchema,
+  roots: z.array(viewTreeNodeSchema),
+})
+
+export const inspectorSnapshotSchema = z.object({
+  snapshotId: z.string(),
+  capturedAt: z.string(),
+  platform: platformSchema,
+  available: z.boolean(),
+  payload: z.unknown().nullable(),
+  reason: z.string().nullable().optional(),
+})

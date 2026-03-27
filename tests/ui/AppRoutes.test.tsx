@@ -8,6 +8,10 @@ vi.mock('../../src/pages/ClientDetailPage', () => ({
   ClientDetailPage: () => <div>Client Detail Mock</div>,
 }))
 
+vi.mock('../../src/pages/ViewInfoPage', () => ({
+  ViewInfoPage: () => <div>View Info Mock</div>,
+}))
+
 function mockFetchClientsOnce() {
   vi.stubGlobal(
     'fetch',
@@ -46,5 +50,15 @@ describe('app routes', () => {
     await waitFor(() => expect(screen.getByText('客户端列表')).toBeTruthy())
     fireEvent.click(screen.getByText('进入详情'))
     await waitFor(() => expect(screen.getByText('Client Detail Mock')).toBeTruthy())
+  })
+
+  it('renders view info route', async () => {
+    render(
+      <MemoryRouter initialEntries={['/clients/demo-client/views']}>
+        <AppRoutes />
+      </MemoryRouter>,
+    )
+
+    await waitFor(() => expect(screen.getByText('View Info Mock')).toBeTruthy())
   })
 })

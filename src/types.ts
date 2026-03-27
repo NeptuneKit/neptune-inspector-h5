@@ -80,6 +80,67 @@ export interface LogQueryFilters {
   level?: string
 }
 
+export interface ViewTreeNode {
+  id: string
+  parentId: string | null
+  name: string
+  frame?: ViewTreeFrame
+  style?: ViewTreeStyle
+  text?: string | null
+  visible?: boolean
+  children: ViewTreeNode[]
+}
+
+export interface ViewTreeFrame {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface ViewTreeStyle {
+  opacity?: number
+  backgroundColor?: string
+  textColor?: string
+  typographyUnit?: 'dp'
+  sourceTypographyUnit?: 'pt' | 'sp' | 'fp' | 'vp' | 'px' | 'dp'
+  platformFontScale?: number
+  fontSize?: number
+  lineHeight?: number
+  letterSpacing?: number
+  fontWeight?: string
+  fontWeightRaw?: string
+  fontFamily?: string
+  borderRadius?: number
+  borderWidth?: number
+  borderColor?: string
+  zIndex?: number
+  textAlign?: string
+  textContentAlign?: string
+  textOverflow?: string
+  wordBreak?: string
+  paddingTop?: number
+  paddingRight?: number
+  paddingBottom?: number
+  paddingLeft?: number
+}
+
+export interface ViewTreeSnapshot {
+  snapshotId: string
+  capturedAt: string
+  platform: Platform
+  roots: ViewTreeNode[]
+}
+
+export interface InspectorSnapshot {
+  snapshotId: string
+  capturedAt: string
+  platform: Platform
+  available: boolean
+  payload: unknown | null
+  reason?: string | null
+}
+
 export interface InspectorState {
   baseUrl: string
   filters: LogQueryFilters

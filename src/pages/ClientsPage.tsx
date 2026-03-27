@@ -89,9 +89,14 @@ export function ClientsPage() {
                     <dd>{client.lastSeenAt}</dd>
                   </div>
                 </dl>
-                <Link className="link-btn" to={`/clients/${clientKey}`}>
-                  进入详情
-                </Link>
+                <div className="actions-group" style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
+                  <Link className="link-btn" to={`/clients/${clientKey}`} style={{ flex: 1 }}>
+                    进入详情
+                  </Link>
+                  <Link className="link-btn secondary" to={`/clients/${clientKey}/views`} style={{ flex: 1 }}>
+                    视图信息
+                  </Link>
+                </div>
               </article>
             )
           })}

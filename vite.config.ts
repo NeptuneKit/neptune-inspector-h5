@@ -32,5 +32,12 @@ export default defineConfig({
   server: {
     port: 5188,
     host: '127.0.0.1',
+    proxy: {
+      '/__neptune_gateway': {
+        target: 'http://127.0.0.1:18765',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/__neptune_gateway/, ''),
+      },
+    },
   }
 })

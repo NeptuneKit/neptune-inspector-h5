@@ -102,8 +102,8 @@ describe('ClientDetailPage', () => {
     )
 
     await waitFor(() => expect(fetchClientLogsMock).toHaveBeenCalledTimes(1))
-    const recordTags = container.querySelector('.record-tags')
-    expect(recordTags).toBeTruthy()
+    const headerMeta = container.querySelector('.header-meta')
+    expect(headerMeta).toBeTruthy()
   })
 })
 
