@@ -74,8 +74,6 @@ function computeNodeClipPath(
     const ancestor = positionedMap.get(ancestorKey)
     if (ancestor && ancestor.node.frame && ancestor.node.name !== 'Text') {
       const ancestorRadius = styleMap.get(ancestorKey)?.borderRadius ?? 0
-      // Only clip against ancestors that visually indicate clipping (rounded corners).
-      // Avoid clipping by every ancestor, which hides valid off-screen/overflow nodes.
       if (ancestorRadius > 0) {
         hasClippingAncestor = true
         leftInset = Math.max(leftInset, ancestor.x - node.x)
@@ -124,7 +122,6 @@ interface ViewEdge {
 type RenderPlatform = 'harmony' | 'ios' | 'android' | 'web' | 'mock'
 
 const REPLAY_DEVICE_VIEWPORTS: Record<MockPlatform, DeviceViewport> = {
-  // Match current real screenshot baselines for visual regression.
   ios: { width: 1206, height: 2622 },
   android: { width: 1080, height: 2400 },
   harmony: { width: 1320, height: 2856 },
@@ -173,8 +170,6 @@ function createPositionedNodes(
     const width = node.frame ? Math.max(1, node.frame.width) : 160
     const height = node.frame ? Math.max(1, node.frame.height) : 56
     const zIndex = node.style?.zIndex ?? 0
-    // Keep platform zIndex semantics, but ensure deeper descendants render above ancestors
-    // when they share the same zIndex value.
     const renderOrder = zIndex * 10000 + node.depth * 100 + node.order
     return {
       node,
@@ -214,77 +209,6 @@ function createViewEdges(positionedNodes: PositionedNode[], selectedNodeKey: str
   return output
 }
 
-function flyToNode(nodeKey: string | null): void {
-  if (!nodeKey) {
-    return
-  }
-  const target = document.querySelector(`[data-node-key="${nodeKey}"]`)
-  if (!(target instanceof HTMLElement)) {
-    return
-  }
-
-  const container = target.closest('.view-graph-3d-wrap, .view-graph')
-  if (container instanceof HTMLElement && typeof container.scrollTo === 'function') {
-    const targetRect = target.getBoundingClientRect()
-    const containerRect = container.getBoundingClientRect()
-    const nextLeft = container.scrollLeft + (targetRect.left - containerRect.left) - (container.clientWidth - targetRect.width) / 2
-    const nextTop = container.scrollTop + (targetRect.top - containerRect.top) - (container.clientHeight - targetRect.height) / 2
-    container.scrollTo({
-      left: Math.max(0, nextLeft),
-      top: Math.max(0, nextTop),
-      behavior: 'smooth',
-    })
-    return
-  }
-
-  if (typeof target.scrollIntoView === 'function') {
-    target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
-  }
-}
-
-function useFitScale(
-  containerRef: RefObject<HTMLElement | null>,
-  contentWidth: number,
-  contentHeight: number,
-  allowUpscale = false,
-): number {
-  const [scale, setScale] = useState(1)
-
-  useEffect(() => {
-    const container = containerRef.current
-    if (!container) {
-      setScale(1)
-      return
-    }
-
-    const updateScale = (): void => {
-      const availableWidth = Math.max(1, container.clientWidth - 24)
-      const availableHeight = Math.max(1, container.clientHeight - 24)
-      const widthScale = availableWidth / Math.max(1, contentWidth)
-      const heightScale = availableHeight / Math.max(1, contentHeight)
-      const fitScale = Math.min(widthScale, heightScale)
-      const maxScale = allowUpscale ? 8 : 1
-      const nextScale = Math.max(0.35, Math.min(maxScale, fitScale))
-      setScale(Number.isFinite(nextScale) && nextScale > 0 ? nextScale : 1)
-    }
-
-    updateScale()
-
-    if (typeof ResizeObserver !== 'undefined') {
-      const observer = new ResizeObserver(() => updateScale())
-      observer.observe(container)
-      return () => observer.disconnect()
-    }
-
-    if (typeof window !== 'undefined') {
-      window.addEventListener('resize', updateScale)
-      return () => window.removeEventListener('resize', updateScale)
-    }
-  }, [allowUpscale, containerRef, contentWidth, contentHeight])
-
-  return scale
-}
-
 function toPixelLength(value: number | undefined): string | undefined {
   if (value === undefined || !Number.isFinite(value)) {
     return undefined
@@ -321,14 +245,12 @@ function hasVisibleVisualStyle(style: ViewTreeNode['style'] | undefined): boolea
     return false
   }
   const bgAlpha = parseHexAlpha(style.backgroundColor)
-  if (style.backgroundColor && (bgAlpha === null || bgAlpha > 0)) {
-    return true
-  }
+  const hasBg = style.backgroundColor !== undefined && (bgAlpha === null || bgAlpha > 0)
+
   const borderAlpha = parseHexAlpha(style.borderColor)
-  if ((style.borderWidth ?? 0) > 0 && style.borderColor && (borderAlpha === null || borderAlpha > 0)) {
-    return true
-  }
-  return false
+  const hasBorder = (style.borderWidth ?? 0) > 0 && style.borderColor !== undefined && (borderAlpha === null || borderAlpha > 0)
+
+  return hasBg || hasBorder
 }
 
 function hasRenderableText(text: string | null | undefined): boolean {
@@ -354,8 +276,6 @@ function isPlatformNoiseNode(node: FlattenedViewNode, platform: RenderPlatform):
 
 function isVisuallyRenderableNode(node: FlattenedViewNode, platform: RenderPlatform): boolean {
   if (isLayerLikeNodeName(node.name)) {
-    // Full layer tree is useful for inspection, but rendering every layer on canvas
-    // causes heavy overdraw and hides UIView content.
     return false
   }
   if (isPlatformNoiseNode(node, platform)) {
@@ -379,11 +299,14 @@ function isVisuallyRenderableNode(node: FlattenedViewNode, platform: RenderPlatf
   ) {
     return false
   }
-  // Keep top-level containers as structural anchors for viewport restoration.
   if (node.depth <= 1) {
     return true
   }
   return false
+}
+
+function isTransparentNode(node: ViewTreeNode | FlattenedViewNode): boolean {
+  return !hasRenderableText(node.text) && !hasVisibleVisualStyle(node.style)
 }
 
 function createTypographyStyle(style: ViewTreeNode['style'] | undefined, platform: RenderPlatform): CSSProperties {
@@ -449,11 +372,10 @@ function shouldRenderSingleLineText(
   if (fontSize === undefined || !Number.isFinite(fontSize) || fontSize <= 0) {
     return false
   }
-  // ArkUI text nodes with near-font-size frame height are visually single-line.
   return frameHeight > 0 && frameHeight <= fontSize * 1.6
 }
 
-function normalizePlatformColor(color: string | undefined, platform: RenderPlatform): string | undefined {
+function normalizePlatformColor(color: string | undefined, _platform: RenderPlatform): string | undefined {
   if (!color || !color.startsWith('#')) {
     return color
   }
@@ -461,8 +383,6 @@ function normalizePlatformColor(color: string | undefined, platform: RenderPlatf
   if (hex.length !== 8) {
     return color
   }
-  // Standardized snapshot colors are normalized to #RRGGBBAA by the gateway.
-  // Keep them as-is to avoid channel-swapping on iOS/Android.
   return color
 }
 
@@ -561,23 +481,38 @@ function PropertyRow({ label, value, highlight = false }: { label: string, value
   )
 }
 
+function hasVisibleDescendant(node: ViewTreeNode): boolean {
+  return node.children.some((child) => !isTransparentNode(child) || hasVisibleDescendant(child))
+}
+
 function ViewTreeNodeItem({
   node,
   path,
   selectedNodeKey,
   hiddenNodeKeys,
   onSelect,
+  hideTransparent,
 }: {
   node: ViewTreeNode
   path: string
   selectedNodeKey: string | null
   hiddenNodeKeys: readonly string[]
   onSelect: (nodeKey: string) => void
+  hideTransparent: boolean
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const hasChildren = node.children.length > 0
   const relation = relationOfNode(path, selectedNodeKey)
   const hidden = isNodeKeyHidden(path, hiddenNodeKeys)
+
+  const isTransparent = isTransparentNode(node)
+  if (hideTransparent && isTransparent) {
+    const visibleInDescendants = hasVisibleDescendant(node)
+    if (!visibleInDescendants) {
+      return null
+    }
+  }
+  const isDimmed = hideTransparent && isTransparent
 
   return (
     <li>
@@ -631,7 +566,7 @@ function ViewTreeNodeItem({
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             textDecoration: hidden ? 'line-through' : undefined,
-            opacity: hidden ? 0.6 : 1
+            opacity: hidden ? 0.6 : (isDimmed ? 0.4 : 1)
           }}>
             {node.name}
           </span>
@@ -652,6 +587,7 @@ function ViewTreeNodeItem({
               selectedNodeKey={selectedNodeKey}
               hiddenNodeKeys={hiddenNodeKeys}
               onSelect={onSelect}
+              hideTransparent={hideTransparent}
             />
           ))}
         </ul>
@@ -746,8 +682,6 @@ function createViewScene(nodes: FlattenedViewNode[], platform: RenderPlatform): 
     return frame ? frame.y + frame.height : 0
   }))
 
-  // Keep root viewport anchored at origin when possible, but preserve negative-space
-  // content so off-screen nodes (left/top) can still be reached via scrolling.
   const minX = Math.min(0, contentMinX)
   const minY = Math.min(0, contentMinY)
   const anchorWidth = Math.max(1, anchorNode.frame?.width ?? 1)
@@ -758,8 +692,6 @@ function createViewScene(nodes: FlattenedViewNode[], platform: RenderPlatform): 
     bounds: {
       minX,
       minY,
-      // Keep viewport at root size, but let stage grow to full content extent so
-      // overflowing children can be reached by scrolling inside the view area.
       width: Math.max(anchorWidth, contentMaxX - minX),
       height: Math.max(anchorHeight, contentMaxY - minY),
       viewportWidth: anchorWidth,
@@ -769,7 +701,7 @@ function createViewScene(nodes: FlattenedViewNode[], platform: RenderPlatform): 
 }
 
 function inferStageBackgroundColor(
-  positionedNodes: PositionedViewNode[],
+  positionedNodes: PositionedNode[],
   platform: RenderPlatform,
 ): string | undefined {
   const nonTransparent = (color: string | undefined): string | undefined => {
@@ -824,27 +756,42 @@ function inferStageBackgroundColor(
   return undefined
 }
 
-function ViewGraph2D({
-  nodes,
-  selectedNodeKey,
-  onSelect,
-  showConnections,
-  platform,
-  allowUpscale,
-  captureMode,
-  disableAutoFit,
-}: {
+interface ViewGraphProps {
+  mode: ViewRenderMode
   nodes: FlattenedViewNode[]
   selectedNodeKey: string | null
   onSelect: (nodeKey: string) => void
   showConnections: boolean
+  hideTransparent: boolean
   platform: RenderPlatform
-  allowUpscale?: boolean
   captureMode?: boolean
-  disableAutoFit?: boolean
-}) {
+  pan: { x: number; y: number }
+  setPan: React.Dispatch<React.SetStateAction<{ x: number; y: number }>>
+  zoom: number
+  setZoom: React.Dispatch<React.SetStateAction<number>>
+  rotation: { x: number; y: number }
+  setRotation: React.Dispatch<React.SetStateAction<{ x: number; y: number }>>
+  containerRef: RefObject<HTMLDivElement | null>
+}
+
+function ViewGraph({
+  mode,
+  nodes,
+  selectedNodeKey,
+  onSelect,
+  showConnections,
+  hideTransparent,
+  platform,
+  captureMode,
+  pan,
+  setPan,
+  zoom,
+  setZoom,
+  rotation,
+  setRotation,
+  containerRef,
+}: ViewGraphProps) {
   const scene = useMemo(() => createViewScene(nodes, platform), [nodes, platform])
-  const [zoomPercent, setZoomPercent] = useState(100)
   const hasSelection = selectedNodeKey !== null
   const positionedNodes = useMemo(
     () =>
@@ -856,10 +803,6 @@ function ViewGraph2D({
       }),
     [scene.nodes],
   )
-  const viewEdges = useMemo(
-    () => (showConnections ? createViewEdges(positionedNodes, selectedNodeKey) : []),
-    [positionedNodes, selectedNodeKey, showConnections],
-  )
   const renderableNodes = useMemo(
     () =>
       positionedNodes.filter((item) => {
@@ -870,10 +813,39 @@ function ViewGraph2D({
         if (relation !== 'none') {
           return true
         }
+        if (hideTransparent && isTransparentNode(item.node)) {
+          return false
+        }
         return isVisuallyRenderableNode(item.node, platform)
       }),
-    [positionedNodes, selectedNodeKey, platform],
+    [positionedNodes, selectedNodeKey, platform, hideTransparent],
   )
+  const compressedDepthMap = useMemo(() => {
+    const map = new Map<string, number>()
+    if (!hideTransparent) {
+      return map
+    }
+    const sortedRenderable = [...renderableNodes].sort((a, b) => a.node.depth - b.node.depth)
+    for (const item of sortedRenderable) {
+      const key = item.node.keyPath
+      let currentVisibleDepth = 0
+      let parentKey = parentKeyOf(key)
+      while (parentKey) {
+        if (map.has(parentKey)) {
+          currentVisibleDepth = map.get(parentKey)! + 1
+          break
+        }
+        parentKey = parentKeyOf(parentKey)
+      }
+      map.set(key, currentVisibleDepth)
+    }
+    return map
+  }, [renderableNodes, hideTransparent])
+  const viewEdges = useMemo(
+    () => (showConnections ? createViewEdges(positionedNodes, selectedNodeKey) : []),
+    [positionedNodes, selectedNodeKey, showConnections],
+  )
+
   const clipPathByNodeKey = useMemo(() => {
     const positionedMap = new Map(positionedNodes.map((item) => [item.node.keyPath, item] as const))
     const styleMap = new Map<string, ViewTreeNode['style'] | undefined>()
@@ -898,126 +870,127 @@ function ViewGraph2D({
     }
     return clipMap
   }, [positionedNodes, platform])
-  const sceneWidth = scene.bounds?.width ?? 980
-  const sceneHeight = scene.bounds?.height ?? Math.max(640, positionedNodes.length * 60)
-  const viewportWidth = scene.bounds?.viewportWidth ?? sceneWidth
-  const viewportHeight = scene.bounds?.viewportHeight ?? sceneHeight
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const fitScale = useFitScale(containerRef, viewportWidth, viewportHeight, allowUpscale ?? false)
-  const baseScale = disableAutoFit ? 1 : fitScale
-  const effectiveScale = baseScale * (zoomPercent / 100)
-  const scaledWidth = Math.max(1, viewportWidth * effectiveScale)
-  const scaledHeight = Math.max(1, viewportHeight * effectiveScale)
-  const stageBackgroundColor = useMemo(
-    () => inferStageBackgroundColor(renderableNodes, platform),
-    [renderableNodes, platform],
-  )
 
-  const [pan, setPan] = useState({ x: 0, y: 0 })
-  const dragRef = useRef({ isDragging: false, startX: 0, startY: 0, initialPanX: 0, initialPanY: 0, moved: false })
-
-  // Initialize pan to center the content
-  useEffect(() => {
-    if (!containerRef.current) return
-    const container = containerRef.current
-    const initialX = (container.clientWidth - scaledWidth) / 2
-    const initialY = (container.clientHeight - scaledHeight) / 2
-    setPan({ x: initialX, y: initialY })
-  }, [scaledWidth, scaledHeight])
-
-  // Center selected node
-  useEffect(() => {
-    if (!selectedNodeKey || !containerRef.current) return
-    const target = positionedNodes.find(n => n.node.keyPath === selectedNodeKey)
-    if (!target) return
-
-    const container = containerRef.current
-    const targetCenterX = target.x + target.width / 2
-    const targetCenterY = target.y + target.height / 2
-    
-    // Calculate next pan to put target center at container center
-    const nextX = container.clientWidth / 2 - targetCenterX * effectiveScale
-    const nextY = container.clientHeight / 2 - targetCenterY * effectiveScale
-    
-    setPan({ x: nextX, y: nextY })
-  }, [selectedNodeKey, effectiveScale, positionedNodes])
+  const dragRef = useRef({ 
+    isDragging: false, 
+    dragMode: 'none' as 'rotate' | 'pan', 
+    startX: 0, 
+    startY: 0, 
+    initialRotation: { x: 0, y: 0 }, 
+    initialPan: { x: 0, y: 0 },
+    moved: false
+  })
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    // Only drag with left mouse button
-    if (e.button !== 0) return
+    if (e.button !== 0 && e.button !== 1 && e.button !== 2) return
     if ((e.target as HTMLElement).closest('.view-zoom-control')) return
 
+    const isPan = e.button === 2 || e.shiftKey || (mode === '2d' && e.button === 0)
+    
     dragRef.current = {
       isDragging: true,
+      dragMode: isPan ? 'pan' : 'rotate',
       startX: e.pageX,
       startY: e.pageY,
-      initialPanX: pan.x,
-      initialPanY: pan.y,
+      initialRotation: { ...rotation },
+      initialPan: { ...pan },
       moved: false
     }
+    
     if (containerRef.current) {
-      containerRef.current.style.cursor = 'grabbing'
+      containerRef.current.style.cursor = dragRef.current.dragMode === 'pan' ? 'grabbing' : 'move'
     }
-  }, [pan])
+  }, [rotation, pan, mode, containerRef])
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (!dragRef.current.isDragging) return
     e.preventDefault()
-    
+
     const dx = e.pageX - dragRef.current.startX
     const dy = e.pageY - dragRef.current.startY
-    
+
     if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
       dragRef.current.moved = true
     }
 
-    setPan({
-      x: dragRef.current.initialPanX + dx,
-      y: dragRef.current.initialPanY + dy
-    })
-  }, [])
+    if (dragRef.current.dragMode === 'rotate') {
+      setRotation({
+        x: dragRef.current.initialRotation.x - dy * 0.5,
+        y: dragRef.current.initialRotation.y + dx * 0.5
+      })
+    } else {
+      setPan({
+        x: dragRef.current.initialPan.x + dx,
+        y: dragRef.current.initialPan.y + dy
+      })
+    }
+  }, [setRotation, setPan])
 
-  const handleMouseUpOrLeave = useCallback(() => {
+  const handleMouseUp = useCallback(() => {
     if (!dragRef.current.isDragging) return
     dragRef.current.isDragging = false
     if (containerRef.current) {
       containerRef.current.style.cursor = ''
     }
-  }, [])
+  }, [containerRef])
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
+  const handleWheel = useCallback((e: WheelEvent) => {
+    e.preventDefault()
     if (e.ctrlKey || e.metaKey) {
-      // Zoom
-      e.preventDefault()
-      const zoomStep = 5
       const direction = e.deltaY > 0 ? -1 : 1
-      setZoomPercent((prev) => Math.max(50, Math.min(300, prev + direction * zoomStep)))
+      setZoom((prev) => Math.max(0.05, Math.min(4, prev + direction * 0.05)))
     } else {
-      // Pan
       setPan((prev) => ({
         x: prev.x - e.deltaX,
         y: prev.y - e.deltaY
       }))
     }
-  }, [])
+  }, [setZoom, setPan])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    el.addEventListener('wheel', handleWheel, { passive: false })
+    return () => el.removeEventListener('wheel', handleWheel)
+  }, [containerRef, handleWheel])
+
+  const sceneWidth = scene.bounds?.width ?? 980
+  const sceneHeight = scene.bounds?.height ?? 640
+  const stageBackgroundColor = useMemo(
+    () => mode === '2d' ? inferStageBackgroundColor(renderableNodes, platform) : 'transparent',
+    [renderableNodes, platform, mode],
+  )
 
   return (
     <div
-      className={`view-graph view-graph-2d ${hasSelection ? 'view-selection-active' : ''}`}
-      data-testid="view-canvas-2d"
+      data-testid={mode === '3d' ? 'view-canvas-3d' : 'view-canvas-2d'}
+      className={`view-graph ${mode === '3d' ? 'view-graph-3d-wrap' : 'view-graph-2d'} ${hasSelection ? 'view-selection-active' : ''}`}
       ref={containerRef}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUpOrLeave}
-      onMouseLeave={handleMouseUpOrLeave}
-      onWheel={handleWheel}
-      style={{ overflow: 'hidden', cursor: 'grab' }}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      onContextMenu={(e) => e.preventDefault()}
+      style={{ 
+        overflow: 'hidden', 
+        cursor: 'grab', 
+        background: mode === '3d' ? 'radial-gradient(circle at 50% 50%, #1e293b 0%, #020617 100%)' : undefined, 
+        perspective: '2000px',
+        perspectiveOrigin: '50% 50%',
+        position: 'relative',
+        flex: 1,
+        width: '100%',
+        height: '100%',
+        touchAction: 'none',
+        overscrollBehavior: 'none',
+        transition: 'background 0.6s ease'
+      }}
     >
       {captureMode ? null : (
         <div className="view-zoom-control">
-          <button onClick={() => setZoomPercent((value) => Math.max(50, value - 10))}>-</button>
-          <span>{zoomPercent}%</span>
-          <button onClick={() => setZoomPercent((value) => Math.min(300, value + 10))}>+</button>
+          <button onClick={() => setZoom((value) => Math.max(0.1, value - 0.1))}>-</button>
+          <span>{Math.round(zoom * 100)}%</span>
+          <button onClick={() => setZoom((value) => Math.min(3, value + 0.1))}>+</button>
         </div>
       )}
       <div 
@@ -1025,12 +998,15 @@ function ViewGraph2D({
         style={{ 
           width: `${String(sceneWidth)}px`, 
           height: `${String(sceneHeight)}px`,
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${effectiveScale})`,
-          transformOrigin: '0 0',
+          transform: `translate3d(${pan.x}px, ${pan.y}px, 0) rotateX(${rotation.x}deg) rotateY(${rotation.y}deg) scale3d(${zoom}, ${zoom}, ${zoom})`,
+          transformOrigin: '50% 50%',
+          transformStyle: 'preserve-3d',
+          transition: dragRef.current.isDragging ? 'none' : 'transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.6s ease',
           backgroundColor: stageBackgroundColor,
           position: 'absolute',
           left: 0,
           top: 0,
+          backfaceVisibility: 'hidden',
         }}
       >
         <div
@@ -1040,12 +1016,15 @@ function ViewGraph2D({
           style={{
             width: `${String(sceneWidth)}px`,
             height: `${String(sceneHeight)}px`,
+            transformStyle: 'preserve-3d',
             borderRadius: 0,
-            boxShadow: scene.bounds && !captureMode ? '0 0 0 1px rgba(255, 255, 255, 0.1), 0 18px 28px rgba(4, 8, 21, 0.35)' : undefined,
+            boxShadow: mode === '2d' && scene.bounds && !captureMode ? '0 0 0 1px rgba(255, 255, 255, 0.1), 0 18px 28px rgba(4, 8, 21, 0.35)' : undefined,
+            transition: 'box-shadow 0.6s ease, border-radius 0.6s ease',
+            backfaceVisibility: 'hidden',
           }}
         >
           {showConnections ? (
-            <svg className="view-links-layer" width={sceneWidth} height={sceneHeight} aria-hidden="true">
+            <svg className="view-links-layer" width={sceneWidth} height={sceneHeight} aria-hidden="true" style={{ transform: 'translateZ(1px)' }}>
               {viewEdges.map((edge) => (
                 <line
                   key={edge.id}
@@ -1059,8 +1038,11 @@ function ViewGraph2D({
             </svg>
           ) : null}
           {renderableNodes.map((positioned) => {
+            const depth = hideTransparent ? (compressedDepthMap.get(positioned.node.keyPath) ?? 0) : positioned.node.depth
+            const z = mode === '3d' ? (depth * 100 + positioned.zIndex * 4) : 0
             const hasFrame = positioned.node.frame !== undefined && scene.bounds !== null
             const relation = relationOfNode(positioned.node.keyPath, selectedNodeKey)
+            const isTransparent = isTransparentNode(positioned.node)
             const baseRenderStyle = normalizeRenderStyle(positioned.node.style, platform)
             const renderStyle = applyPlatformRenderFallback(
               baseRenderStyle,
@@ -1078,20 +1060,33 @@ function ViewGraph2D({
               positioned.node.depth === 0 &&
               (renderStyle?.backgroundColor?.toUpperCase() === '#FFFFFFFF' ||
                 renderStyle?.backgroundColor?.toUpperCase() === '#FFFFFF')
+            
+            let backgroundColor = renderStyle?.backgroundColor
+            if (mode === '3d') {
+              const isRoot = positioned.node.depth === 0
+              const nodeBg = isRootWhiteFill ? 'transparent' : renderStyle?.backgroundColor
+              backgroundColor = (nodeBg && nodeBg.toLowerCase() !== '#00000000') 
+                ? nodeBg 
+                : (isRoot ? '#141416' : nodeBg)
+            } else {
+              backgroundColor = isRootWhiteFill ? 'transparent' : renderStyle?.backgroundColor
+            }
+
             const shouldClipNode = hasFrame && positioned.node.name !== 'Text'
+            const pointerEvents = (hideTransparent && isTransparent && relation !== 'selected') ? 'none' : undefined
+
             return (
               <div
                 key={positioned.node.keyPath}
-                className={`view-node view-node-2d ${hasFrame ? 'view-node-framed' : ''} relation-${relation}`}
+                className={`view-node ${mode === '3d' ? 'view-node-3d' : 'view-node-2d'} ${hasFrame ? 'view-node-framed' : ''} relation-${relation}`}
                 data-node-key={positioned.node.keyPath}
                 style={{
-                  left: `${String(positioned.x)}px`,
-                  top: `${String(positioned.y)}px`,
+                  transform: `translate3d(${String(positioned.x)}px, ${String(positioned.y)}px, ${String(z)}px)`,
                   width: `${String(positioned.width)}px`,
                   height: `${String(positioned.height)}px`,
                   overflow: shouldClipNode ? 'hidden' : undefined,
                   opacity: renderStyle?.opacity,
-                  backgroundColor: isRootWhiteFill ? 'transparent' : renderStyle?.backgroundColor,
+                  backgroundColor,
                   borderColor: renderStyle?.borderColor,
                   borderWidth: renderStyle?.borderWidth,
                   borderRadius: renderStyle?.borderRadius,
@@ -1104,256 +1099,42 @@ function ViewGraph2D({
                   paddingBottom: toPixelLength(renderStyle?.paddingBottom),
                   paddingLeft: toPixelLength(renderStyle?.paddingLeft),
                   clipPath: clipPathByNodeKey.get(positioned.node.keyPath),
+                  outline: mode === '3d' ? '1px solid rgba(255,255,255,0.1)' : undefined,
+                  boxShadow: mode === '3d' ? (relation === 'selected' ? undefined : '0 2px 8px rgba(0,0,0,0.4)') : undefined,
+                  transition: 'transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.6s, background-color 0.6s, box-shadow 0.6s, outline 0.6s',
+                  transformStyle: 'preserve-3d',
+                  backfaceVisibility: 'hidden',
+                  pointerEvents,
                 }}
                 onClick={(e) => {
                   if (dragRef.current.moved) return
+                  e.stopPropagation()
                   onSelect(positioned.node.keyPath)
                 }}
               >
                 {positioned.node.text ? (
-                  (() => {
-                    const pillLike =
-                      ((renderStyle?.borderRadius ?? 0) > 0 &&
-                        !!renderStyle?.backgroundColor &&
-                        renderStyle.backgroundColor.toUpperCase() !== '#00000000')
-                    const centeredLike = typographyStyle.textAlign === 'center'
-                    const singleLine = shouldRenderSingleLineText(renderStyle, positioned.height, positioned.node.text)
-                    const singleLineHeight = `${String(positioned.height)}px`
-                    const shouldForceSingleLineHeight = singleLine && typographyStyle.lineHeight === undefined
-                    const contentAlignItems = isCenteredButton ? 'center' : mapTextContentAlign(renderStyle)
-                    return (
                   <span
                     className="view-node-text"
                     style={{
                       ...typographyStyle,
                       width: '100%',
-                      height: centeredLike || pillLike ? '100%' : undefined,
-                      display: centeredLike || pillLike ? 'flex' : 'block',
-                      alignItems: centeredLike || pillLike ? contentAlignItems : undefined,
-                      justifyContent: centeredLike || pillLike ? (centeredLike ? 'center' : undefined) : undefined,
-                      wordBreak: singleLine ? 'normal' : (renderStyle?.wordBreak === 'break-word' ? 'break-word' : undefined),
-                      overflowWrap: singleLine ? 'normal' : (renderStyle?.wordBreak === 'break-word' ? 'anywhere' : undefined),
+                      height: (typographyStyle.textAlign === 'center') || ((renderStyle?.borderRadius ?? 0) > 0 && !!renderStyle?.backgroundColor && renderStyle.backgroundColor.toUpperCase() !== '#00000000') ? '100%' : undefined,
+                      display: (typographyStyle.textAlign === 'center') || ((renderStyle?.borderRadius ?? 0) > 0 && !!renderStyle?.backgroundColor && renderStyle.backgroundColor.toUpperCase() !== '#00000000') ? 'flex' : 'block',
+                      alignItems: isCenteredButton ? 'center' : mapTextContentAlign(renderStyle),
+                      justifyContent: typographyStyle.textAlign === 'center' ? 'center' : undefined,
+                      wordBreak: shouldRenderSingleLineText(renderStyle, positioned.height, positioned.node.text) ? 'normal' : (renderStyle?.wordBreak === 'break-word' ? 'break-word' : undefined),
+                      overflowWrap: shouldRenderSingleLineText(renderStyle, positioned.height, positioned.node.text) ? 'normal' : (renderStyle?.wordBreak === 'break-word' ? 'anywhere' : undefined),
                       textOverflow: renderStyle?.textOverflow?.toLowerCase().includes('clip') ? 'clip' : undefined,
-                      whiteSpace: singleLine ? 'nowrap' : undefined,
-                      lineHeight: shouldForceSingleLineHeight ? singleLineHeight : typographyStyle.lineHeight,
+                      whiteSpace: shouldRenderSingleLineText(renderStyle, positioned.height, positioned.node.text) ? 'nowrap' : undefined,
+                      lineHeight: shouldRenderSingleLineText(renderStyle, positioned.height, positioned.node.text) && typographyStyle.lineHeight === undefined ? `${String(positioned.height)}px` : typographyStyle.lineHeight,
                     }}
                   >
                     {positioned.node.text}
                   </span>
-                    )
-                  })()
                 ) : null}
               </div>
             )
           })}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ViewGraph3D({
-  nodes,
-  selectedNodeKey,
-  onSelect,
-  showConnections,
-  platform,
-  allowUpscale,
-  captureMode,
-  disableAutoFit,
-}: {
-  nodes: FlattenedViewNode[]
-  selectedNodeKey: string | null
-  onSelect: (nodeKey: string) => void
-  showConnections: boolean
-  platform: RenderPlatform
-  allowUpscale?: boolean
-  captureMode?: boolean
-  disableAutoFit?: boolean
-}) {
-  const scene = useMemo(() => createViewScene(nodes, platform), [nodes, platform])
-  const hasSelection = selectedNodeKey !== null
-  const positionedNodes = useMemo(
-    () =>
-      createPositionedNodes(scene.nodes, scene, { xByDepth: 170, yByOrder: 60 }).sort((left, right) => {
-        if (left.renderOrder !== right.renderOrder) {
-          return left.renderOrder - right.renderOrder
-        }
-        return left.node.order - right.node.order
-      }),
-    [scene.nodes],
-  )
-  const renderableNodes = useMemo(
-    () =>
-      positionedNodes.filter((item) => {
-        if (isLayerLikeNodeName(item.node.name)) {
-          return false
-        }
-        return isVisuallyRenderableNode(item.node, platform)
-      }),
-    [positionedNodes, platform],
-  )
-  const viewEdges = useMemo(
-    () => (showConnections ? createViewEdges(renderableNodes, selectedNodeKey) : []),
-    [renderableNodes, selectedNodeKey, showConnections],
-  )
-  const sceneWidth = scene.bounds?.width ?? 980
-  const sceneHeight = scene.bounds?.height ?? Math.max(640, positionedNodes.length * 60)
-  const viewportWidth = scene.bounds?.viewportWidth ?? sceneWidth
-  const viewportHeight = scene.bounds?.viewportHeight ?? sceneHeight
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const fitScale = useFitScale(containerRef, viewportWidth, viewportHeight, allowUpscale ?? false)
-  const baseScale = disableAutoFit ? 1 : fitScale
-  const scaledWidth = Math.max(1, viewportWidth * baseScale)
-  const scaledHeight = Math.max(1, viewportHeight * baseScale)
-  const stageBackgroundColor = useMemo(
-    () => inferStageBackgroundColor(renderableNodes, platform),
-    [renderableNodes, platform],
-  )
-  const clipPathByNodeKey = useMemo(() => {
-    const positionedMap = new Map(positionedNodes.map((item) => [item.node.keyPath, item] as const))
-    const styleMap = new Map<string, ViewTreeNode['style'] | undefined>()
-    for (const item of positionedNodes) {
-      styleMap.set(
-        item.node.keyPath,
-        applyPlatformRenderFallback(
-          normalizeRenderStyle(item.node.style, platform),
-          item.node,
-          item.height,
-          platform,
-        ),
-      )
-    }
-
-    const clipMap = new Map<string, string>()
-    for (const item of positionedNodes) {
-      const clipPath = computeNodeClipPath(item, positionedMap, styleMap)
-      if (clipPath) {
-        clipMap.set(item.node.keyPath, clipPath)
-      }
-    }
-    return clipMap
-  }, [positionedNodes, platform])
-
-  return (
-    <div
-      className={`view-graph-3d-wrap ${hasSelection ? 'view-selection-active' : ''}`}
-      data-testid="view-canvas-3d"
-      ref={containerRef}
-    >
-      <div className="view-graph view-graph-3d">
-        <div className="view-stage-viewport" style={{ width: `${String(scaledWidth)}px`, height: `${String(scaledHeight)}px` }}>
-          <div
-            className={`view-stage view-stage-scaled ${
-              scene.bounds ? (captureMode ? 'view-stage-plain' : 'view-stage-framed') : 'view-stage-fallback'
-            }`}
-            style={{
-              width: `${String(sceneWidth)}px`,
-              height: `${String(sceneHeight)}px`,
-              transform: `scale(${String(baseScale)})`,
-              backgroundColor: stageBackgroundColor,
-            }}
-          >
-            {showConnections ? (
-              <svg className="view-links-layer" width={sceneWidth} height={sceneHeight} aria-hidden="true">
-                {viewEdges.map((edge) => (
-                  <line
-                    key={edge.id}
-                    className={`view-link relation-${edge.relation}`}
-                    x1={edge.x1}
-                    y1={edge.y1}
-                    x2={edge.x2}
-                    y2={edge.y2}
-                  />
-                ))}
-              </svg>
-            ) : null}
-            {renderableNodes.map((positioned) => {
-              const z = positioned.node.depth * 28 + positioned.zIndex * 2
-              const hasFrame = positioned.node.frame !== undefined && scene.bounds !== null
-              const relation = relationOfNode(positioned.node.keyPath, selectedNodeKey)
-              const baseRenderStyle = normalizeRenderStyle(positioned.node.style, platform)
-              const renderStyle = applyPlatformRenderFallback(
-                baseRenderStyle,
-                positioned.node,
-                positioned.height,
-                platform,
-              )
-              const typographyStyle = createTypographyStyle(renderStyle, platform)
-              const isCenteredButton =
-                platform === 'harmony' &&
-                positioned.node.name === 'Button' &&
-                typographyStyle.textAlign === 'center'
-              const isRootWhiteFill =
-                captureMode &&
-                positioned.node.depth === 0 &&
-                (renderStyle?.backgroundColor?.toUpperCase() === '#FFFFFFFF' ||
-                  renderStyle?.backgroundColor?.toUpperCase() === '#FFFFFF')
-              const shouldClipNode = hasFrame && positioned.node.name !== 'Text'
-              return (
-                <div
-                  key={positioned.node.keyPath}
-                  className={`view-node view-node-3d ${hasFrame ? 'view-node-framed' : ''} relation-${relation}`}
-                  data-node-key={positioned.node.keyPath}
-                  style={{
-                    transform: `translate3d(${String(positioned.x)}px, ${String(positioned.y)}px, ${String(z)}px)`,
-                    width: `${String(positioned.width)}px`,
-                    height: `${String(positioned.height)}px`,
-                    overflow: shouldClipNode ? 'hidden' : undefined,
-                    opacity: renderStyle?.opacity,
-                    backgroundColor: isRootWhiteFill ? 'transparent' : renderStyle?.backgroundColor,
-                    borderColor: renderStyle?.borderColor,
-                    borderWidth: renderStyle?.borderWidth,
-                    borderRadius: renderStyle?.borderRadius,
-                    color: renderStyle?.textColor,
-                    zIndex: positioned.renderOrder,
-                    justifyContent: isCenteredButton ? 'center' : undefined,
-                    alignItems: isCenteredButton ? 'center' : undefined,
-                    paddingTop: toPixelLength(renderStyle?.paddingTop),
-                    paddingRight: toPixelLength(renderStyle?.paddingRight),
-                    paddingBottom: toPixelLength(renderStyle?.paddingBottom),
-                    paddingLeft: toPixelLength(renderStyle?.paddingLeft),
-                    clipPath: clipPathByNodeKey.get(positioned.node.keyPath),
-                  }}
-                  onClick={() => onSelect(positioned.node.keyPath)}
-                >
-                  {positioned.node.text ? (
-                    (() => {
-                      const pillLike =
-                        ((renderStyle?.borderRadius ?? 0) > 0 &&
-                          !!renderStyle?.backgroundColor &&
-                          renderStyle.backgroundColor.toUpperCase() !== '#00000000')
-                      const centeredLike = typographyStyle.textAlign === 'center'
-                      const singleLine = shouldRenderSingleLineText(renderStyle, positioned.height, positioned.node.text)
-                      const singleLineHeight = `${String(positioned.height)}px`
-                      const shouldForceSingleLineHeight = singleLine && typographyStyle.lineHeight === undefined
-                      const contentAlignItems = isCenteredButton ? 'center' : mapTextContentAlign(renderStyle)
-                      return (
-                    <span
-                      className="view-node-text"
-                      style={{
-                        ...typographyStyle,
-                        width: '100%',
-                        height: centeredLike || pillLike ? '100%' : undefined,
-                        display: centeredLike || pillLike ? 'flex' : 'block',
-                        alignItems: centeredLike || pillLike ? contentAlignItems : undefined,
-                        justifyContent: centeredLike || pillLike ? (centeredLike ? 'center' : undefined) : undefined,
-                        wordBreak: singleLine ? 'normal' : (renderStyle?.wordBreak === 'break-word' ? 'break-word' : undefined),
-                        overflowWrap: singleLine ? 'normal' : (renderStyle?.wordBreak === 'break-word' ? 'anywhere' : undefined),
-                        textOverflow: renderStyle?.textOverflow?.toLowerCase().includes('clip') ? 'clip' : undefined,
-                        whiteSpace: singleLine ? 'nowrap' : undefined,
-                        lineHeight: shouldForceSingleLineHeight ? singleLineHeight : typographyStyle.lineHeight,
-                      }}
-                    >
-                      {positioned.node.text}
-                    </span>
-                      )
-                    })()
-                  ) : null}
-                </div>
-              )
-            })}
-          </div>
         </div>
       </div>
     </div>
@@ -1380,9 +1161,16 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null)
   const [hiddenNodeKeys, setHiddenNodeKeys] = useState<string[]>([])
   const [showConnections, setShowConnections] = useState(false)
+  const [hideTransparent, setHideTransparent] = useState(false)
   const [rawNodeCopyState, setRawNodeCopyState] = useState<'idle' | 'done' | 'error'>('idle')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [zoom, setZoom] = useState(0.8)
+  const [rotation, setRotation] = useState({ x: 0, y: 0 })
+  const containerRef = useRef<HTMLDivElement | null>(null)
+
   const isReplayMode = useMemo(() => {
     if (!mockOnly) {
       return false
@@ -1518,12 +1306,72 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
     setHiddenNodeKeys([])
   }, [])
 
-  useEffect(() => {
-    if (!selectedNodeKey) {
-      return
+  const centerView = useCallback((nodeKey?: string | null, targetZoom?: number) => {
+    if (!containerRef.current || !snapshot) return
+    
+    const platform = snapshot.platform as RenderPlatform
+    const scene = createViewScene(flattenedNodes, platform)
+    const positionedNodes = createPositionedNodes(scene.nodes, scene, { xByDepth: 190, yByOrder: 64 })
+    
+    const container = containerRef.current
+    const cw = container.clientWidth
+    const ch = container.clientHeight
+    
+    const sceneWidth = scene.bounds?.width ?? 980
+    const sceneHeight = scene.bounds?.height ?? 640
+    
+    let tx, ty
+    if (nodeKey) {
+      const target = positionedNodes.find(n => n.node.keyPath === nodeKey)
+      if (target) {
+        tx = target.x + target.width / 2
+        ty = target.y + target.height / 2
+      } else {
+        tx = sceneWidth / 2
+        ty = sceneHeight / 2
+      }
+    } else {
+      tx = sceneWidth / 2
+      ty = sceneHeight / 2
     }
-    flyToNode(selectedNodeKey)
-  }, [selectedNodeKey, mode])
+
+    const z = targetZoom ?? zoom
+    setPan({
+      x: cw / 2 - tx * z - (sceneWidth / 2) * (1 - z),
+      y: ch / 2 - ty * z - (sceneHeight / 2) * (1 - z)
+    })
+  }, [snapshot, flattenedNodes, zoom])
+
+  useEffect(() => {
+    if (snapshot && containerRef.current) {
+      centerView(null, mode === '2d' ? 0.8 : 0.6)
+    }
+  }, [snapshot])
+
+  useEffect(() => {
+    if (selectedNodeKey) {
+      centerView(selectedNodeKey)
+    }
+  }, [selectedNodeKey])
+
+  const handleSetMode = (newMode: ViewRenderMode) => {
+    setMode(newMode)
+    let nextZoom = zoom
+    if (newMode === '2d') {
+      setRotation({ x: 0, y: 0 })
+      // When switching back to 2D, we can restore a more standard zoom if it was very small
+      if (zoom < 0.6) {
+        nextZoom = 0.8
+      }
+    } else {
+      setRotation({ x: 35, y: -35 })
+      // Auto-fit: decrease zoom by ~35% when entering 3D to fit exploded layers
+      nextZoom = Math.max(0.1, zoom * 0.65)
+    }
+    setZoom(nextZoom)
+    // Synchronize pan update to match rotation/zoom transition
+    centerView(selectedNodeKey, nextZoom)
+  }
 
   useEffect(() => {
     setRawNodeCopyState('idle')
@@ -1573,14 +1421,14 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
             <div className="view-mode-switch">
               <button
                 className={`mode-btn ${mode === '2d' ? 'mode-btn-active' : ''}`}
-                onClick={() => setMode('2d')}
+                onClick={() => handleSetMode('2d')}
                 style={{ height: '26px', padding: '0 12px' }}
               >
                 2D
               </button>
               <button
                 className={`mode-btn ${mode === '3d' ? 'mode-btn-active' : ''}`}
-                onClick={() => setMode('3d')}
+                onClick={() => handleSetMode('3d')}
                 style={{ height: '26px', padding: '0 12px' }}
               >
                 3D
@@ -1603,6 +1451,13 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                 </button>
               ))}
             </div>
+            <button 
+              className="mode-btn" 
+              onClick={() => setHideTransparent(!hideTransparent)}
+              style={{ height: '26px', padding: '0 10px', color: hideTransparent ? 'var(--accent-blue)' : 'inherit' }}
+            >
+              hide transparent
+            </button>
             <button className="mode-btn mode-btn-active" onClick={() => void loadSnapshot(true)}>
               refresh
             </button>
@@ -1626,27 +1481,23 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                   height: replayDeviceViewport ? `${String(replayDeviceViewport.height)}px` : undefined,
                 }}
               >
-                {mode === '2d' ? (
-                  <ViewGraph2D
-                    nodes={visibleFlattenedNodes}
-                    selectedNodeKey={selectedNodeKey}
-                    onSelect={setSelectedNodeKey}
-                    showConnections={false}
-                    platform={snapshot.platform as RenderPlatform}
-                    allowUpscale
-                    captureMode={isCaptureMode}
-                  />
-                ) : (
-                  <ViewGraph3D
-                    nodes={visibleFlattenedNodes}
-                    selectedNodeKey={selectedNodeKey}
-                    onSelect={setSelectedNodeKey}
-                    showConnections={false}
-                    platform={snapshot.platform as RenderPlatform}
-                    allowUpscale
-                    captureMode={isCaptureMode}
-                  />
-                )}
+                <ViewGraph
+                  mode={mode}
+                  nodes={visibleFlattenedNodes}
+                  selectedNodeKey={selectedNodeKey}
+                  onSelect={setSelectedNodeKey}
+                  showConnections={false}
+                  hideTransparent={hideTransparent}
+                  platform={snapshot.platform as RenderPlatform}
+                  captureMode={isCaptureMode}
+                  pan={pan}
+                  setPan={setPan}
+                  zoom={zoom}
+                  setZoom={setZoom}
+                  rotation={rotation}
+                  setRotation={setRotation}
+                  containerRef={containerRef}
+                />
               </div>
             </div>
           ) : null}
@@ -1674,14 +1525,14 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
           <div className="view-mode-switch">
             <button
               className={`mode-btn ${mode === '2d' ? 'mode-btn-active' : ''}`}
-              onClick={() => setMode('2d')}
+              onClick={() => handleSetMode('2d')}
               style={{ height: '24px', padding: '0 12px' }}
             >
               2D
             </button>
             <button
               className={`mode-btn ${mode === '3d' ? 'mode-btn-active' : ''}`}
-              onClick={() => setMode('3d')}
+              onClick={() => handleSetMode('3d')}
               style={{ height: '24px', padding: '0 12px' }}
             >
               3D
@@ -1713,6 +1564,13 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
               onClick={() => setShowConnections(!showConnections)}
             >
               Show Connections
+            </button>
+            <div className="divider" />
+            <button 
+              style={{ height: '22px', color: hideTransparent ? 'var(--accent-blue)' : 'inherit' }} 
+              onClick={() => setHideTransparent(!hideTransparent)}
+            >
+              Hide Transparent
             </button>
             <div className="divider" />
             <button
@@ -1748,6 +1606,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                       selectedNodeKey={selectedNodeKey}
                       hiddenNodeKeys={hiddenNodeKeys}
                       onSelect={setSelectedNodeKey}
+                      hideTransparent={hideTransparent}
                     />
                   ))}
                 </ul>
@@ -1777,29 +1636,22 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
             {error ? <div className="error-box">{error}</div> : null}
             {!loading && !error && !snapshot ? <div className="empty">No view available.</div> : null}
             {snapshot && (
-              <>
-                {mode === '2d' ? (
-                  <ViewGraph2D
-                    nodes={visibleFlattenedNodes}
-                    selectedNodeKey={selectedNodeKey}
-                    onSelect={setSelectedNodeKey}
-                    showConnections={showConnections}
-                    platform={snapshot.platform as RenderPlatform}
-                    allowUpscale
-                    disableAutoFit
-                  />
-                ) : (
-                  <ViewGraph3D
-                    nodes={visibleFlattenedNodes}
-                    selectedNodeKey={selectedNodeKey}
-                    onSelect={setSelectedNodeKey}
-                    showConnections={showConnections}
-                    platform={snapshot.platform as RenderPlatform}
-                    allowUpscale
-                    disableAutoFit
-                  />
-                )}
-              </>
+              <ViewGraph
+                mode={mode}
+                nodes={visibleFlattenedNodes}
+                selectedNodeKey={selectedNodeKey}
+                onSelect={setSelectedNodeKey}
+                showConnections={showConnections}
+                hideTransparent={hideTransparent}
+                platform={snapshot.platform as RenderPlatform}
+                pan={pan}
+                setPan={setPan}
+                zoom={zoom}
+                setZoom={setZoom}
+                rotation={rotation}
+                setRotation={setRotation}
+                containerRef={containerRef}
+              />
             )}
           </section>
           

@@ -784,7 +784,7 @@ time {
 }
 
 .view-graph-2d {
-  padding: 1rem;
+  /* removed padding to prevent layout shifts */
 }
 
 .view-zoom-control {
@@ -818,8 +818,6 @@ time {
   border: 1px solid var(--border);
   border-radius: 14px;
   overflow: auto;
-  perspective: 1300px;
-  perspective-origin: 45% 8%;
   background:
     radial-gradient(circle at 15% 10%, rgba(109, 170, 255, 0.2), transparent 40%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0));
