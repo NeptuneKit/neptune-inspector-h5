@@ -1423,9 +1423,9 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
   if (!identity) {
     return (
       <main className="page detail-page">
-        <div className="error-box">无效客户端标识，无法查看视图信息。</div>
+        <div className="error-box">Invalid client identity, cannot view info.</div>
         <Link className="link-btn" to="/">
-          返回首页
+          Back to Home
         </Link>
       </main>
     )
@@ -1477,7 +1477,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
         )}
         <section className="replay-canvas-shell">
           {error ? <div className="error-box">{error}</div> : null}
-          {!loading && !error && !snapshot ? <div className="empty">暂无视图。</div> : null}
+          {!loading && !error && !snapshot ? <div className="empty">No view available.</div> : null}
           {snapshot ? (
             <div
               className={`replay-canvas-scroller ${isCaptureMode ? 'replay-canvas-scroller-capture' : ''}`}
@@ -1522,90 +1522,80 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
   }
 
   return (
-    <main className="page detail-page">
-      <header className="page-header">
-        <div className="header-content">
-            <nav className="breadcrumb">
-              <Link className="breadcrumb-link" to="/">Neptune</Link>
+    <main className="page detail-page" style={{ maxWidth: 'none', padding: 0 }}>
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 1rem', borderBottom: '1px solid var(--border)', background: 'var(--surface)' }}>
+        <nav className="breadcrumb" style={{ margin: 0 }}>
+          <Link className="breadcrumb-link" to="/">Neptune</Link>
+          <span className="breadcrumb-separator">/</span>
+          {mockOnly ? null : (
+            <>
+              <Link className="breadcrumb-link" to={`/clients/${clientKey}`}>Client Detail</Link>
               <span className="breadcrumb-separator">/</span>
-              {mockOnly ? null : (
-                <>
-                  <Link className="breadcrumb-link" to={`/clients/${clientKey}`}>Client Detail</Link>
-                  <span className="breadcrumb-separator">/</span>
-                </>
-              )}
-              <span className="breadcrumb-current">View Info</span>
-            </nav>
-          <h1>视图信息 · {identity.platform} / {identity.appId}</h1>
-          <div className="header-meta">
-            <span className="meta-chip"><span className="meta-key">session</span><span className="meta-val">{identity.sessionId}</span></span>
-            <span className="meta-chip"><span className="meta-key">device</span><span className="meta-val">{identity.deviceId}</span></span>
+            </>
+          )}
+          <span className="breadcrumb-current">View Info</span>
+        </nav>
+
+        <div className="toolbar">
+          <div className="view-mode-switch">
+            <button
+              className={`mode-btn ${mode === '2d' ? 'mode-btn-active' : ''}`}
+              onClick={() => setMode('2d')}
+              style={{ height: '24px', padding: '0 12px' }}
+            >
+              2D
+            </button>
+            <button
+              className={`mode-btn ${mode === '3d' ? 'mode-btn-active' : ''}`}
+              onClick={() => setMode('3d')}
+              style={{ height: '24px', padding: '0 12px' }}
+            >
+              3D
+            </button>
           </div>
+          {mockOnly ? (
+            <div className="view-mode-switch">
+              {(['harmony', 'ios', 'android'] as MockPlatform[]).map((platform) => (
+                <button
+                  key={platform}
+                  className={`mode-btn ${activeMockPlatform === platform ? 'mode-btn-active' : ''}`}
+                  onClick={() => {
+                    const next = new URLSearchParams(searchParams)
+                    next.set('platform', platform)
+                    setSearchParams(next, { replace: true })
+                  }}
+                  style={{ height: '24px', padding: '0 10px', textTransform: 'uppercase' }}
+                >
+                  {platform}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="button-group" style={{ height: '28px', padding: '2px' }}>
+            <button style={{ height: '22px' }} onClick={() => void loadSnapshot(true)}>Refresh Snapshot</button>
+            <div className="divider" />
+            <button 
+              style={{ height: '22px', color: showConnections ? 'var(--accent-blue)' : 'inherit' }} 
+              onClick={() => setShowConnections(!showConnections)}
+            >
+              Show Connections
+            </button>
+            <div className="divider" />
+            <button
+              style={{ height: '22px' }}
+              onClick={clearHiddenNodes}
+              disabled={hiddenNodeKeys.length === 0}
+            >
+              Show All
+            </button>
+          </div>
+          <span className="status-pill">{loading ? 'LOADING' : useMockSnapshot ? 'MOCK' : 'READY'}</span>
         </div>
       </header>
 
-      <div className="panel" style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 200px)' }}>
-        <div className="panel-title-row">
-          <h2>视图检查器</h2>
-          <div className="toolbar">
-            <div className="view-mode-switch">
-              <button
-                className={`mode-btn ${mode === '2d' ? 'mode-btn-active' : ''}`}
-                onClick={() => setMode('2d')}
-                style={{ height: '24px', padding: '0 12px' }}
-              >
-                2D
-              </button>
-              <button
-                className={`mode-btn ${mode === '3d' ? 'mode-btn-active' : ''}`}
-                onClick={() => setMode('3d')}
-                style={{ height: '24px', padding: '0 12px' }}
-              >
-                3D
-              </button>
-            </div>
-            {mockOnly ? (
-              <div className="view-mode-switch">
-                {(['harmony', 'ios', 'android'] as MockPlatform[]).map((platform) => (
-                  <button
-                    key={platform}
-                    className={`mode-btn ${activeMockPlatform === platform ? 'mode-btn-active' : ''}`}
-                    onClick={() => {
-                      const next = new URLSearchParams(searchParams)
-                      next.set('platform', platform)
-                      setSearchParams(next, { replace: true })
-                    }}
-                    style={{ height: '24px', padding: '0 10px', textTransform: 'uppercase' }}
-                  >
-                    {platform}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            <div className="button-group" style={{ height: '28px', padding: '2px' }}>
-              <button style={{ height: '22px' }} onClick={() => void loadSnapshot(true)}>刷新快照</button>
-              <div className="divider" />
-              <button 
-                style={{ height: '22px', color: showConnections ? 'var(--accent-blue)' : 'inherit' }} 
-                onClick={() => setShowConnections(!showConnections)}
-              >
-                显示连线
-              </button>
-              <div className="divider" />
-              <button
-                style={{ height: '22px' }}
-                onClick={clearHiddenNodes}
-                disabled={hiddenNodeKeys.length === 0}
-              >
-                显示全部
-              </button>
-            </div>
-            <span className="status-pill">{loading ? 'LOADING' : useMockSnapshot ? 'MOCK' : 'READY'}</span>
-          </div>
-        </div>
-
+      <div className="panel" style={{ display: 'flex', flexDirection: 'column', flex: 1, border: 'none', borderRadius: 0, width: '100%' }}>
         <div className="view-inspector-layout" style={{ border: 'none', borderRadius: 0, height: '100%' }}>
-          {/* 左侧：组件树 */}
+          {/* Left: Component Tree */}
           <aside className="view-sidebar" style={{ width: '280px' }}>
             <div className="view-tree-meta">
               <span>Nodes: {visibleFlattenedNodes.length}/{flattenedNodes.length}</span>
@@ -1628,15 +1618,15 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                   ))}
                 </ul>
               ) : (
-                <div className="empty">无快照</div>
+                <div className="empty">No Snapshot</div>
               )}
             </div>
           </aside>
 
-          {/* 中间：画布 */}
+          {/* Middle: Canvas */}
           <section className="view-main-content">
             {error ? <div className="error-box">{error}</div> : null}
-            {!loading && !error && !snapshot ? <div className="empty">暂无视图。</div> : null}
+            {!loading && !error && !snapshot ? <div className="empty">No view available.</div> : null}
             {snapshot && (
               <>
                 {mode === '2d' ? (
@@ -1664,7 +1654,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
             )}
           </section>
           
-          {/* 右侧：属性面板 */}
+          {/* Right: Properties Panel */}
           <aside className="view-properties-panel" style={{ width: '320px' }}>
             {selectedNode ? (
               <div style={{ flex: 1, overflow: 'auto' }}>
@@ -1677,11 +1667,11 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                   <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px', gap: '6px' }}>
                     {selectedNodeHidden ? (
                       <button type="button" className="mode-btn" onClick={unhideSelectedNode} style={{ height: '24px', padding: '0 10px' }}>
-                        取消隐藏
+                        Unhide
                       </button>
                     ) : (
                       <button type="button" className="mode-btn" onClick={hideSelectedNode} style={{ height: '24px', padding: '0 10px' }}>
-                        隐藏节点
+                        Hide Node
                       </button>
                     )}
                   </div>
@@ -1707,7 +1697,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                         onClick={() => { void copyRawNode() }}
                         style={{ height: '24px', padding: '0 10px' }}
                       >
-                        {rawNodeCopyState === 'done' ? '已复制' : rawNodeCopyState === 'error' ? '复制失败' : '复制 JSON'}
+                        {rawNodeCopyState === 'done' ? 'Copied' : rawNodeCopyState === 'error' ? 'Copy Failed' : 'Copy JSON'}
                       </button>
                     </div>
                     <pre className="prop-json">
@@ -1739,7 +1729,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                 )}
               </div>
             ) : (
-              <div className="empty" style={{ padding: '2rem 1rem' }}>选择一个节点查看详细属性。</div>
+              <div className="empty" style={{ padding: '2rem 1rem' }}>Select a node to view detailed properties.</div>
             )}
           </aside>
         </div>
