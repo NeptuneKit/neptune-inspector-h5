@@ -913,11 +913,105 @@ function ViewGraph2D({
     [renderableNodes, platform],
   )
 
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const dragRef = useRef({ isDragging: false, startX: 0, startY: 0, initialPanX: 0, initialPanY: 0, moved: false })
+
+  // Initialize pan to center the content
+  useEffect(() => {
+    if (!containerRef.current) return
+    const container = containerRef.current
+    const initialX = (container.clientWidth - scaledWidth) / 2
+    const initialY = (container.clientHeight - scaledHeight) / 2
+    setPan({ x: initialX, y: initialY })
+  }, [scaledWidth, scaledHeight])
+
+  // Center selected node
+  useEffect(() => {
+    if (!selectedNodeKey || !containerRef.current) return
+    const target = positionedNodes.find(n => n.node.keyPath === selectedNodeKey)
+    if (!target) return
+
+    const container = containerRef.current
+    const targetCenterX = target.x + target.width / 2
+    const targetCenterY = target.y + target.height / 2
+    
+    // Calculate next pan to put target center at container center
+    const nextX = container.clientWidth / 2 - targetCenterX * effectiveScale
+    const nextY = container.clientHeight / 2 - targetCenterY * effectiveScale
+    
+    setPan({ x: nextX, y: nextY })
+  }, [selectedNodeKey, effectiveScale, positionedNodes])
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Only drag with left mouse button
+    if (e.button !== 0) return
+    if ((e.target as HTMLElement).closest('.view-zoom-control')) return
+
+    dragRef.current = {
+      isDragging: true,
+      startX: e.pageX,
+      startY: e.pageY,
+      initialPanX: pan.x,
+      initialPanY: pan.y,
+      moved: false
+    }
+    if (containerRef.current) {
+      containerRef.current.style.cursor = 'grabbing'
+    }
+  }, [pan])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!dragRef.current.isDragging) return
+    e.preventDefault()
+    
+    const dx = e.pageX - dragRef.current.startX
+    const dy = e.pageY - dragRef.current.startY
+    
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      dragRef.current.moved = true
+    }
+
+    setPan({
+      x: dragRef.current.initialPanX + dx,
+      y: dragRef.current.initialPanY + dy
+    })
+  }, [])
+
+  const handleMouseUpOrLeave = useCallback(() => {
+    if (!dragRef.current.isDragging) return
+    dragRef.current.isDragging = false
+    if (containerRef.current) {
+      containerRef.current.style.cursor = ''
+    }
+  }, [])
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      // Zoom
+      e.preventDefault()
+      const zoomStep = 5
+      const direction = e.deltaY > 0 ? -1 : 1
+      setZoomPercent((prev) => Math.max(50, Math.min(300, prev + direction * zoomStep)))
+    } else {
+      // Pan
+      setPan((prev) => ({
+        x: prev.x - e.deltaX,
+        y: prev.y - e.deltaY
+      }))
+    }
+  }, [])
+
   return (
     <div
       className={`view-graph view-graph-2d ${hasSelection ? 'view-selection-active' : ''}`}
       data-testid="view-canvas-2d"
       ref={containerRef}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUpOrLeave}
+      onMouseLeave={handleMouseUpOrLeave}
+      onWheel={handleWheel}
+      style={{ overflow: 'hidden', cursor: 'grab' }}
     >
       {captureMode ? null : (
         <div className="view-zoom-control">
@@ -926,16 +1020,28 @@ function ViewGraph2D({
           <button onClick={() => setZoomPercent((value) => Math.min(300, value + 10))}>+</button>
         </div>
       )}
-      <div className="view-stage-viewport" style={{ width: `${String(scaledWidth)}px`, height: `${String(scaledHeight)}px` }}>
+      <div 
+        className="view-stage-viewport" 
+        style={{ 
+          width: `${String(sceneWidth)}px`, 
+          height: `${String(sceneHeight)}px`,
+          transform: `translate(${pan.x}px, ${pan.y}px) scale(${effectiveScale})`,
+          transformOrigin: '0 0',
+          backgroundColor: stageBackgroundColor,
+          position: 'absolute',
+          left: 0,
+          top: 0,
+        }}
+      >
         <div
-          className={`view-stage view-stage-scaled ${
+          className={`view-stage ${
             scene.bounds ? (captureMode ? 'view-stage-plain' : 'view-stage-framed') : 'view-stage-fallback'
           }`}
           style={{
             width: `${String(sceneWidth)}px`,
             height: `${String(sceneHeight)}px`,
-            transform: `scale(${String(effectiveScale)})`,
-            backgroundColor: stageBackgroundColor,
+            borderRadius: 0,
+            boxShadow: scene.bounds && !captureMode ? '0 0 0 1px rgba(255, 255, 255, 0.1), 0 18px 28px rgba(4, 8, 21, 0.35)' : undefined,
           }}
         >
           {showConnections ? (
@@ -999,7 +1105,10 @@ function ViewGraph2D({
                   paddingLeft: toPixelLength(renderStyle?.paddingLeft),
                   clipPath: clipPathByNodeKey.get(positioned.node.keyPath),
                 }}
-                onClick={() => onSelect(positioned.node.keyPath)}
+                onClick={(e) => {
+                  if (dragRef.current.moved) return
+                  onSelect(positioned.node.keyPath)
+                }}
               >
                 {positioned.node.text ? (
                   (() => {
@@ -1420,6 +1529,31 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
     setRawNodeCopyState('idle')
   }, [selectedNodeKey])
 
+  const [sidebarWidth, setSidebarWidth] = useState(280)
+  const isResizingRef = useRef(false)
+
+  const onResizerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    isResizingRef.current = true
+    document.body.style.cursor = 'col-resize'
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!isResizingRef.current) return
+      const nextWidth = Math.max(160, Math.min(600, moveEvent.clientX))
+      setSidebarWidth(nextWidth)
+    }
+
+    const handleMouseUp = () => {
+      isResizingRef.current = false
+      document.body.style.cursor = ''
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+  }, [])
+
   if (!identity) {
     return (
       <main className="page detail-page">
@@ -1594,9 +1728,9 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
       </header>
 
       <div className="panel" style={{ display: 'flex', flexDirection: 'column', flex: 1, border: 'none', borderRadius: 0, width: '100%' }}>
-        <div className="view-inspector-layout" style={{ border: 'none', borderRadius: 0, height: '100%' }}>
+        <div className="view-inspector-layout" style={{ border: 'none', borderRadius: 0, height: '100%', gridTemplateColumns: `${sidebarWidth}px 4px 1fr 320px` }}>
           {/* Left: Component Tree */}
-          <aside className="view-sidebar" style={{ width: '280px' }}>
+          <aside className="view-sidebar" style={{ width: `${sidebarWidth}px` }}>
             <div className="view-tree-meta">
               <span>Nodes: {visibleFlattenedNodes.length}/{flattenedNodes.length}</span>
               <span>Depth: {maxDepth}</span>
@@ -1622,6 +1756,21 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
               )}
             </div>
           </aside>
+
+          {/* Resizer Handle */}
+          <div
+            onMouseDown={onResizerMouseDown}
+            style={{
+              width: '4px',
+              cursor: 'col-resize',
+              background: 'transparent',
+              borderRight: '1px solid var(--border)',
+              zIndex: 10,
+              transition: 'background 0.2s',
+            }}
+            onMouseOver={(e) => (e.currentTarget.style.background = 'var(--accent-blue)')}
+            onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+          />
 
           {/* Middle: Canvas */}
           <section className="view-main-content">
