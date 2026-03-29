@@ -86,6 +86,7 @@ export interface ViewTreeNode {
   name: string
   frame?: ViewTreeFrame
   style?: ViewTreeStyle
+  rawNode?: unknown
   text?: string | null
   visible?: boolean
   children: ViewTreeNode[]

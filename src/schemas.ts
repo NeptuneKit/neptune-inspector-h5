@@ -106,6 +106,7 @@ export const viewTreeNodeSchema: z.ZodType<{
     borderColor?: string
     zIndex?: number
   }
+  rawNode?: unknown
   text?: string | null
   visible?: boolean
   children: unknown[]
@@ -145,6 +146,7 @@ export const viewTreeNodeSchema: z.ZodType<{
     paddingBottom: z.number().optional(),
     paddingLeft: z.number().optional(),
   }).optional(),
+  rawNode: z.unknown().optional(),
   text: z.string().nullable().optional(),
   visible: z.boolean().optional(),
   children: z.array(z.lazy(() => viewTreeNodeSchema)),

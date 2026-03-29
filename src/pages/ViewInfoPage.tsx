@@ -23,7 +23,7 @@ interface FlattenedViewNode {
   name: string
   frame?: ViewTreeNode['frame']
   style?: ViewTreeNode['style']
-  attributes?: ViewTreeNode['attributes']
+  rawNode?: unknown
   text?: string | null
   visible?: boolean
   depth: number
@@ -340,6 +340,10 @@ function createTypographyStyle(style: ViewTreeNode['style'] | undefined, platfor
       ? style.fontFamily
       : platform === 'harmony'
         ? 'HarmonyOS Sans, PingFang SC, sans-serif'
+        : platform === 'ios'
+          ? '-apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif'
+          : platform === 'android'
+            ? 'Roboto, "Noto Sans CJK SC", "Noto Sans", sans-serif'
         : undefined
   return {
     fontSize: toPixelLength(style?.fontSize),
@@ -419,13 +423,17 @@ function applyPlatformRenderFallback(
   if (!style) {
     return style
   }
-  if (platform !== 'harmony') {
-    if (platform === 'ios' && node.name === 'UIWindow') {
+  if (platform === 'ios') {
+    if (node.name === 'UIWindow') {
       return {
         ...style,
         backgroundColor: '#00000000',
       }
     }
+    return style
+  }
+
+  if (platform !== 'harmony') {
     return style
   }
 
@@ -578,6 +586,17 @@ function flattenViewTree(roots: ViewTreeNode[]): FlattenedViewNode[] {
   const output: FlattenedViewNode[] = []
   let order = 0
 
+  const fallbackRawNodePayload = (node: ViewTreeNode) => ({
+    id: node.id,
+    parentId: node.parentId,
+    name: node.name,
+    frame: node.frame,
+    style: node.style,
+    text: node.text,
+    visible: node.visible,
+    childCount: node.children.length,
+  })
+
   const walk = (node: ViewTreeNode, depth: number, keyPath: string, siblingCount: number): void => {
     output.push({
       id: node.id,
@@ -585,7 +604,7 @@ function flattenViewTree(roots: ViewTreeNode[]): FlattenedViewNode[] {
       name: node.name,
       frame: node.frame,
       style: node.style,
-      attributes: node.attributes,
+      rawNode: node.rawNode ?? fallbackRawNodePayload(node),
       text: node.text,
       visible: node.visible,
       depth,
@@ -824,7 +843,6 @@ function ViewGraph2D({
           {renderableNodes.map((positioned) => {
             const hasFrame = positioned.node.frame !== undefined && scene.bounds !== null
             const relation = relationOfNode(positioned.node.keyPath, selectedNodeKey)
-            const showNodeChrome = !hasFrame || relation !== 'none'
             const baseRenderStyle = normalizeRenderStyle(positioned.node.style, platform)
             const renderStyle = applyPlatformRenderFallback(
               baseRenderStyle,
@@ -846,7 +864,7 @@ function ViewGraph2D({
             return (
               <div
                 key={positioned.node.keyPath}
-                className={`view-node view-node-2d ${hasFrame ? 'view-node-framed' : ''} ${showNodeChrome ? '' : 'view-node-overlay-hidden'} relation-${relation}`}
+                className={`view-node view-node-2d ${hasFrame ? 'view-node-framed' : ''} relation-${relation}`}
                 data-node-key={positioned.node.keyPath}
                 style={{
                   left: `${String(positioned.x)}px`,
@@ -870,9 +888,6 @@ function ViewGraph2D({
                 }}
                 onClick={() => onSelect(positioned.node.keyPath)}
               >
-                {showNodeChrome ? (
-                  <span className="view-node-name">{positioned.node.name}</span>
-                ) : null}
                 {positioned.node.text ? (
                   (() => {
                     const pillLike =
@@ -904,11 +919,6 @@ function ViewGraph2D({
                   </span>
                     )
                   })()
-                ) : null}
-                {showNodeChrome ? (
-                  <>
-                    <span className="view-node-meta">{positioned.node.id}</span>
-                  </>
                 ) : null}
               </div>
             )
@@ -1046,10 +1056,9 @@ function ViewGraph3D({
                     paddingRight: toPixelLength(renderStyle?.paddingRight),
                     paddingBottom: toPixelLength(renderStyle?.paddingBottom),
                     paddingLeft: toPixelLength(renderStyle?.paddingLeft),
-                  }}
-                  onClick={() => onSelect(positioned.node.keyPath)}
-                >
-                  <span className="view-node-name">{positioned.node.name}</span>
+                }}
+                onClick={() => onSelect(positioned.node.keyPath)}
+              >
                   {positioned.node.text ? (
                     (() => {
                       const pillLike =
@@ -1082,7 +1091,6 @@ function ViewGraph3D({
                       )
                     })()
                   ) : null}
-                  <span className="view-node-meta">{positioned.node.id}</span>
                 </div>
               )
             })}
@@ -1472,10 +1480,10 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                   </PropertySection>
                 )}
 
-                {selectedNode.attributes && Object.keys(selectedNode.attributes).length > 0 && (
-                  <PropertySection title="Attributes" defaultOpen={false}>
+                {selectedNode.rawNode != null && (
+                  <PropertySection title="Raw Node" defaultOpen={false}>
                     <pre className="prop-json">
-                      {JSON.stringify(selectedNode.attributes, null, 2)}
+                      {JSON.stringify(selectedNode.rawNode, null, 2)}
                     </pre>
                   </PropertySection>
                 )}
