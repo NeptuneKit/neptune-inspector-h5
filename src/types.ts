@@ -86,6 +86,7 @@ export interface ViewTreeNode {
   name: string
   frame?: ViewTreeFrame
   style?: ViewTreeStyle
+  constraints?: ViewTreeConstraint[]
   rawNode?: unknown
   text?: string | null
   visible?: boolean
@@ -124,6 +125,20 @@ export interface ViewTreeStyle {
   paddingRight?: number
   paddingBottom?: number
   paddingLeft?: number
+}
+
+export interface ViewTreeConstraint {
+  id: string
+  source: string
+  relation: string
+  firstAttribute: string
+  secondAttribute?: string | null
+  firstItem?: string | null
+  secondItem?: string | null
+  constant: number
+  multiplier: number
+  priority: number
+  isActive: boolean
 }
 
 export interface ViewTreeSnapshot {

@@ -79,6 +79,20 @@ export const metricsSnapshotSchema = z.object({
   retentionDroppedTotal: z.number(),
 })
 
+const viewTreeConstraintSchema = z.object({
+  id: z.string(),
+  source: z.string(),
+  relation: z.string(),
+  firstAttribute: z.string(),
+  secondAttribute: z.string().nullable().optional(),
+  firstItem: z.string().nullable().optional(),
+  secondItem: z.string().nullable().optional(),
+  constant: z.number(),
+  multiplier: z.number(),
+  priority: z.number(),
+  isActive: z.boolean(),
+})
+
 export const viewTreeNodeSchema: z.ZodType<{
   id: string
   parentId: string | null
@@ -106,6 +120,19 @@ export const viewTreeNodeSchema: z.ZodType<{
     borderColor?: string
     zIndex?: number
   }
+  constraints?: {
+    id: string
+    source: string
+    relation: string
+    firstAttribute: string
+    secondAttribute?: string | null
+    firstItem?: string | null
+    secondItem?: string | null
+    constant: number
+    multiplier: number
+    priority: number
+    isActive: boolean
+  }[]
   rawNode?: unknown
   text?: string | null
   visible?: boolean
@@ -146,6 +173,7 @@ export const viewTreeNodeSchema: z.ZodType<{
     paddingBottom: z.number().optional(),
     paddingLeft: z.number().optional(),
   }).optional(),
+  constraints: z.array(viewTreeConstraintSchema).optional(),
   rawNode: z.unknown().optional(),
   text: z.string().nullable().optional(),
   visible: z.boolean().optional(),

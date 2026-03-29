@@ -57,6 +57,59 @@ interface PositionedNode {
   renderOrder: number
 }
 
+function computeNodeClipPath(
+  node: PositionedNode,
+  positionedMap: Map<string, PositionedNode>,
+  styleMap: Map<string, ViewTreeNode['style'] | undefined>,
+): string | undefined {
+  let topInset = 0
+  let rightInset = 0
+  let bottomInset = 0
+  let leftInset = 0
+  let hasClippingAncestor = false
+  let maxAncestorRadius = 0
+
+  let ancestorKey = parentKeyOf(node.node.keyPath)
+  while (ancestorKey) {
+    const ancestor = positionedMap.get(ancestorKey)
+    if (ancestor && ancestor.node.frame && ancestor.node.name !== 'Text') {
+      const ancestorRadius = styleMap.get(ancestorKey)?.borderRadius ?? 0
+      // Only clip against ancestors that visually indicate clipping (rounded corners).
+      // Avoid clipping by every ancestor, which hides valid off-screen/overflow nodes.
+      if (ancestorRadius > 0) {
+        hasClippingAncestor = true
+        leftInset = Math.max(leftInset, ancestor.x - node.x)
+        topInset = Math.max(topInset, ancestor.y - node.y)
+        rightInset = Math.max(rightInset, (node.x + node.width) - (ancestor.x + ancestor.width))
+        bottomInset = Math.max(bottomInset, (node.y + node.height) - (ancestor.y + ancestor.height))
+        if (ancestorRadius > maxAncestorRadius) {
+          maxAncestorRadius = ancestorRadius
+        }
+      }
+    }
+    ancestorKey = parentKeyOf(ancestorKey)
+  }
+
+  if (!hasClippingAncestor) {
+    return undefined
+  }
+
+  const clamp = (value: number, max: number): number => Math.max(0, Math.min(value, max))
+  const top = clamp(topInset, node.height)
+  const right = clamp(rightInset, node.width)
+  const bottom = clamp(bottomInset, node.height)
+  const left = clamp(leftInset, node.width)
+
+  if (top + bottom >= node.height || left + right >= node.width) {
+    return 'inset(50%)'
+  }
+
+  if (maxAncestorRadius > 0) {
+    return `inset(${String(top)}px ${String(right)}px ${String(bottom)}px ${String(left)}px round ${String(maxAncestorRadius)}px)`
+  }
+  return `inset(${String(top)}px ${String(right)}px ${String(bottom)}px ${String(left)}px)`
+}
+
 interface ViewEdge {
   id: string
   fromKey: string
@@ -103,6 +156,10 @@ function parentKeyOf(nodeKey: string): string | null {
     return null
   }
   return nodeKey.slice(0, separator)
+}
+
+function isNodeKeyHidden(nodeKey: string, hiddenNodeKeys: readonly string[]): boolean {
+  return hiddenNodeKeys.some((hiddenKey) => nodeKey === hiddenKey || nodeKey.startsWith(`${hiddenKey}.`))
 }
 
 function createPositionedNodes(
@@ -278,6 +335,11 @@ function hasRenderableText(text: string | null | undefined): boolean {
   return typeof text === 'string' && text.trim().length > 0
 }
 
+function isLayerLikeNodeName(name: string): boolean {
+  const normalized = name.trim().toLowerCase()
+  return normalized === 'calayer' || normalized.endsWith('layer')
+}
+
 function isPlatformNoiseNode(node: FlattenedViewNode, platform: RenderPlatform): boolean {
   if (platform === 'ios') {
     if (node.name === '_UIScrollViewScrollIndicator') {
@@ -291,6 +353,11 @@ function isPlatformNoiseNode(node: FlattenedViewNode, platform: RenderPlatform):
 }
 
 function isVisuallyRenderableNode(node: FlattenedViewNode, platform: RenderPlatform): boolean {
+  if (isLayerLikeNodeName(node.name)) {
+    // Full layer tree is useful for inspection, but rendering every layer on canvas
+    // causes heavy overdraw and hides UIView content.
+    return false
+  }
   if (isPlatformNoiseNode(node, platform)) {
     return false
   }
@@ -498,16 +565,19 @@ function ViewTreeNodeItem({
   node,
   path,
   selectedNodeKey,
+  hiddenNodeKeys,
   onSelect,
 }: {
   node: ViewTreeNode
   path: string
   selectedNodeKey: string | null
+  hiddenNodeKeys: readonly string[]
   onSelect: (nodeKey: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const hasChildren = node.children.length > 0
   const relation = relationOfNode(path, selectedNodeKey)
+  const hidden = isNodeKeyHidden(path, hiddenNodeKeys)
 
   return (
     <li>
@@ -559,10 +629,17 @@ function ViewTreeNodeItem({
             color: relation === 'selected' ? 'var(--accent-blue)' : 'var(--text-secondary)',
             whiteSpace: 'nowrap',
             overflow: 'hidden',
-            textOverflow: 'ellipsis'
+            textOverflow: 'ellipsis',
+            textDecoration: hidden ? 'line-through' : undefined,
+            opacity: hidden ? 0.6 : 1
           }}>
             {node.name}
           </span>
+          {hidden ? (
+            <span style={{ fontSize: '0.65rem', color: 'var(--text-dim)', border: '1px solid var(--border-default)', borderRadius: 4, padding: '0 4px' }}>
+              hidden
+            </span>
+          ) : null}
         </button>
       </div>
       {hasChildren && !collapsed ? (
@@ -573,6 +650,7 @@ function ViewTreeNodeItem({
               node={child}
               path={`${path}.${String(index)}`}
               selectedNodeKey={selectedNodeKey}
+              hiddenNodeKeys={hiddenNodeKeys}
               onSelect={onSelect}
             />
           ))}
@@ -592,6 +670,7 @@ function flattenViewTree(roots: ViewTreeNode[]): FlattenedViewNode[] {
     name: node.name,
     frame: node.frame,
     style: node.style,
+    constraints: node.constraints,
     text: node.text,
     visible: node.visible,
     childCount: node.children.length,
@@ -625,6 +704,9 @@ function flattenViewTree(roots: ViewTreeNode[]): FlattenedViewNode[] {
 }
 
 function shouldParticipateInSceneBounds(node: FlattenedViewNode, platform: RenderPlatform): boolean {
+  if (isLayerLikeNodeName(node.name)) {
+    return false
+  }
   if (node.depth <= 1) {
     return true
   }
@@ -653,12 +735,21 @@ function createViewScene(nodes: FlattenedViewNode[], platform: RenderPlatform): 
         })
       : framedNodes[0]
 
-  const minX = rootFramedNodes.length > 0
-    ? 0
-    : (anchorNode.frame?.x ?? Math.min(...framedNodes.map((node) => node.frame?.x ?? 0)))
-  const minY = rootFramedNodes.length > 0
-    ? 0
-    : (anchorNode.frame?.y ?? Math.min(...framedNodes.map((node) => node.frame?.y ?? 0)))
+  const contentMinX = Math.min(...framedNodes.map((node) => node.frame?.x ?? 0))
+  const contentMinY = Math.min(...framedNodes.map((node) => node.frame?.y ?? 0))
+  const contentMaxX = Math.max(...framedNodes.map((node) => {
+    const frame = node.frame
+    return frame ? frame.x + frame.width : 0
+  }))
+  const contentMaxY = Math.max(...framedNodes.map((node) => {
+    const frame = node.frame
+    return frame ? frame.y + frame.height : 0
+  }))
+
+  // Keep root viewport anchored at origin when possible, but preserve negative-space
+  // content so off-screen nodes (left/top) can still be reached via scrolling.
+  const minX = Math.min(0, contentMinX)
+  const minY = Math.min(0, contentMinY)
   const anchorWidth = Math.max(1, anchorNode.frame?.width ?? 1)
   const anchorHeight = Math.max(1, anchorNode.frame?.height ?? 1)
 
@@ -669,20 +760,8 @@ function createViewScene(nodes: FlattenedViewNode[], platform: RenderPlatform): 
       minY,
       // Keep viewport at root size, but let stage grow to full content extent so
       // overflowing children can be reached by scrolling inside the view area.
-      width: Math.max(
-        anchorWidth,
-        ...framedNodes.map((node) => {
-          const frame = node.frame
-          return frame ? frame.x - minX + frame.width : 0
-        }),
-      ),
-      height: Math.max(
-        anchorHeight,
-        ...framedNodes.map((node) => {
-          const frame = node.frame
-          return frame ? frame.y - minY + frame.height : 0
-        }),
-      ),
+      width: Math.max(anchorWidth, contentMaxX - minX),
+      height: Math.max(anchorHeight, contentMaxY - minY),
       viewportWidth: anchorWidth,
       viewportHeight: anchorHeight,
     },
@@ -703,6 +782,9 @@ function inferStageBackgroundColor(
 
   const rootNodes = positionedNodes.filter((item) => item.node.depth === 0)
   for (const root of rootNodes) {
+    if (isLayerLikeNodeName(root.node.name)) {
+      continue
+    }
     const style = applyPlatformRenderFallback(
       normalizeRenderStyle(root.node.style, platform),
       root.node,
@@ -725,6 +807,9 @@ function inferStageBackgroundColor(
   })
 
   for (const item of sortedByVisualWeight) {
+    if (isLayerLikeNodeName(item.node.name)) {
+      continue
+    }
     const style = applyPlatformRenderFallback(
       normalizeRenderStyle(item.node.style, platform),
       item.node,
@@ -778,14 +863,41 @@ function ViewGraph2D({
   const renderableNodes = useMemo(
     () =>
       positionedNodes.filter((item) => {
+        if (isLayerLikeNodeName(item.node.name)) {
+          return false
+        }
         const relation = relationOfNode(item.node.keyPath, selectedNodeKey)
         if (relation !== 'none') {
-        return true
-      }
-      return isVisuallyRenderableNode(item.node, platform)
-    }),
+          return true
+        }
+        return isVisuallyRenderableNode(item.node, platform)
+      }),
     [positionedNodes, selectedNodeKey, platform],
   )
+  const clipPathByNodeKey = useMemo(() => {
+    const positionedMap = new Map(positionedNodes.map((item) => [item.node.keyPath, item] as const))
+    const styleMap = new Map<string, ViewTreeNode['style'] | undefined>()
+    for (const item of positionedNodes) {
+      styleMap.set(
+        item.node.keyPath,
+        applyPlatformRenderFallback(
+          normalizeRenderStyle(item.node.style, platform),
+          item.node,
+          item.height,
+          platform,
+        ),
+      )
+    }
+
+    const clipMap = new Map<string, string>()
+    for (const item of positionedNodes) {
+      const clipPath = computeNodeClipPath(item, positionedMap, styleMap)
+      if (clipPath) {
+        clipMap.set(item.node.keyPath, clipPath)
+      }
+    }
+    return clipMap
+  }, [positionedNodes, platform])
   const sceneWidth = scene.bounds?.width ?? 980
   const sceneHeight = scene.bounds?.height ?? Math.max(640, positionedNodes.length * 60)
   const viewportWidth = scene.bounds?.viewportWidth ?? sceneWidth
@@ -797,8 +909,8 @@ function ViewGraph2D({
   const scaledWidth = Math.max(1, viewportWidth * effectiveScale)
   const scaledHeight = Math.max(1, viewportHeight * effectiveScale)
   const stageBackgroundColor = useMemo(
-    () => inferStageBackgroundColor(positionedNodes, platform),
-    [positionedNodes, platform],
+    () => inferStageBackgroundColor(renderableNodes, platform),
+    [renderableNodes, platform],
   )
 
   return (
@@ -885,6 +997,7 @@ function ViewGraph2D({
                   paddingRight: toPixelLength(renderStyle?.paddingRight),
                   paddingBottom: toPixelLength(renderStyle?.paddingBottom),
                   paddingLeft: toPixelLength(renderStyle?.paddingLeft),
+                  clipPath: clipPathByNodeKey.get(positioned.node.keyPath),
                 }}
                 onClick={() => onSelect(positioned.node.keyPath)}
               >
@@ -905,7 +1018,8 @@ function ViewGraph2D({
                     style={{
                       ...typographyStyle,
                       width: '100%',
-                      display: centeredLike || pillLike ? 'inline-flex' : 'block',
+                      height: centeredLike || pillLike ? '100%' : undefined,
+                      display: centeredLike || pillLike ? 'flex' : 'block',
                       alignItems: centeredLike || pillLike ? contentAlignItems : undefined,
                       justifyContent: centeredLike || pillLike ? (centeredLike ? 'center' : undefined) : undefined,
                       wordBreak: singleLine ? 'normal' : (renderStyle?.wordBreak === 'break-word' ? 'break-word' : undefined),
@@ -960,9 +1074,19 @@ function ViewGraph3D({
       }),
     [scene.nodes],
   )
+  const renderableNodes = useMemo(
+    () =>
+      positionedNodes.filter((item) => {
+        if (isLayerLikeNodeName(item.node.name)) {
+          return false
+        }
+        return isVisuallyRenderableNode(item.node, platform)
+      }),
+    [positionedNodes, platform],
+  )
   const viewEdges = useMemo(
-    () => (showConnections ? createViewEdges(positionedNodes, selectedNodeKey) : []),
-    [positionedNodes, selectedNodeKey, showConnections],
+    () => (showConnections ? createViewEdges(renderableNodes, selectedNodeKey) : []),
+    [renderableNodes, selectedNodeKey, showConnections],
   )
   const sceneWidth = scene.bounds?.width ?? 980
   const sceneHeight = scene.bounds?.height ?? Math.max(640, positionedNodes.length * 60)
@@ -974,9 +1098,33 @@ function ViewGraph3D({
   const scaledWidth = Math.max(1, viewportWidth * baseScale)
   const scaledHeight = Math.max(1, viewportHeight * baseScale)
   const stageBackgroundColor = useMemo(
-    () => inferStageBackgroundColor(positionedNodes, platform),
-    [positionedNodes, platform],
+    () => inferStageBackgroundColor(renderableNodes, platform),
+    [renderableNodes, platform],
   )
+  const clipPathByNodeKey = useMemo(() => {
+    const positionedMap = new Map(positionedNodes.map((item) => [item.node.keyPath, item] as const))
+    const styleMap = new Map<string, ViewTreeNode['style'] | undefined>()
+    for (const item of positionedNodes) {
+      styleMap.set(
+        item.node.keyPath,
+        applyPlatformRenderFallback(
+          normalizeRenderStyle(item.node.style, platform),
+          item.node,
+          item.height,
+          platform,
+        ),
+      )
+    }
+
+    const clipMap = new Map<string, string>()
+    for (const item of positionedNodes) {
+      const clipPath = computeNodeClipPath(item, positionedMap, styleMap)
+      if (clipPath) {
+        clipMap.set(item.node.keyPath, clipPath)
+      }
+    }
+    return clipMap
+  }, [positionedNodes, platform])
 
   return (
     <div
@@ -1011,7 +1159,7 @@ function ViewGraph3D({
                 ))}
               </svg>
             ) : null}
-            {positionedNodes.map((positioned) => {
+            {renderableNodes.map((positioned) => {
               const z = positioned.node.depth * 28 + positioned.zIndex * 2
               const hasFrame = positioned.node.frame !== undefined && scene.bounds !== null
               const relation = relationOfNode(positioned.node.keyPath, selectedNodeKey)
@@ -1056,9 +1204,10 @@ function ViewGraph3D({
                     paddingRight: toPixelLength(renderStyle?.paddingRight),
                     paddingBottom: toPixelLength(renderStyle?.paddingBottom),
                     paddingLeft: toPixelLength(renderStyle?.paddingLeft),
-                }}
-                onClick={() => onSelect(positioned.node.keyPath)}
-              >
+                    clipPath: clipPathByNodeKey.get(positioned.node.keyPath),
+                  }}
+                  onClick={() => onSelect(positioned.node.keyPath)}
+                >
                   {positioned.node.text ? (
                     (() => {
                       const pillLike =
@@ -1076,7 +1225,8 @@ function ViewGraph3D({
                       style={{
                         ...typographyStyle,
                         width: '100%',
-                        display: centeredLike || pillLike ? 'inline-flex' : 'block',
+                        height: centeredLike || pillLike ? '100%' : undefined,
+                        display: centeredLike || pillLike ? 'flex' : 'block',
                         alignItems: centeredLike || pillLike ? contentAlignItems : undefined,
                         justifyContent: centeredLike || pillLike ? (centeredLike ? 'center' : undefined) : undefined,
                         wordBreak: singleLine ? 'normal' : (renderStyle?.wordBreak === 'break-word' ? 'break-word' : undefined),
@@ -1119,7 +1269,9 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
   const [snapshot, setSnapshot] = useState<ViewTreeSnapshot | null>(null)
   const [mode, setMode] = useState<ViewRenderMode>('2d')
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null)
+  const [hiddenNodeKeys, setHiddenNodeKeys] = useState<string[]>([])
   const [showConnections, setShowConnections] = useState(false)
+  const [rawNodeCopyState, setRawNodeCopyState] = useState<'idle' | 'done' | 'error'>('idle')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const isReplayMode = useMemo(() => {
@@ -1191,6 +1343,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
       }
       setSnapshot(data)
       setSelectedNodeKey(null)
+      setHiddenNodeKeys([])
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setSnapshot(null)
@@ -1204,18 +1357,57 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
   }, [loadSnapshot])
 
   const flattenedNodes = useMemo(() => flattenViewTree(snapshot?.roots ?? []), [snapshot])
+  const visibleFlattenedNodes = useMemo(
+    () => flattenedNodes.filter((node) => !isNodeKeyHidden(node.keyPath, hiddenNodeKeys)),
+    [flattenedNodes, hiddenNodeKeys],
+  )
   const selectedNode = useMemo(
     () => flattenedNodes.find((node) => node.keyPath === selectedNodeKey) ?? null,
     [flattenedNodes, selectedNodeKey],
+  )
+  const selectedNodeHidden = useMemo(
+    () => (selectedNodeKey ? isNodeKeyHidden(selectedNodeKey, hiddenNodeKeys) : false),
+    [selectedNodeKey, hiddenNodeKeys],
   )
   const selectedCanonicalWeight = useMemo(
     () => canonicalFontWeight(selectedNode?.style),
     [selectedNode],
   )
+  const copyRawNode = useCallback(async () => {
+    if (selectedNode?.rawNode == null) {
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(selectedNode.rawNode, null, 2))
+      setRawNodeCopyState('done')
+      window.setTimeout(() => setRawNodeCopyState('idle'), 1200)
+    } catch {
+      setRawNodeCopyState('error')
+      window.setTimeout(() => setRawNodeCopyState('idle'), 1500)
+    }
+  }, [selectedNode?.rawNode])
   const maxDepth = useMemo(
     () => flattenedNodes.reduce((depth, node) => (node.depth > depth ? node.depth : depth), 0),
     [flattenedNodes],
   )
+
+  const hideSelectedNode = useCallback(() => {
+    if (!selectedNodeKey) {
+      return
+    }
+    setHiddenNodeKeys((current) => (current.includes(selectedNodeKey) ? current : [...current, selectedNodeKey]))
+  }, [selectedNodeKey])
+
+  const unhideSelectedNode = useCallback(() => {
+    if (!selectedNodeKey) {
+      return
+    }
+    setHiddenNodeKeys((current) => current.filter((hiddenKey) => hiddenKey !== selectedNodeKey))
+  }, [selectedNodeKey])
+
+  const clearHiddenNodes = useCallback(() => {
+    setHiddenNodeKeys([])
+  }, [])
 
   useEffect(() => {
     if (!selectedNodeKey) {
@@ -1223,6 +1415,10 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
     }
     flyToNode(selectedNodeKey)
   }, [selectedNodeKey, mode])
+
+  useEffect(() => {
+    setRawNodeCopyState('idle')
+  }, [selectedNodeKey])
 
   if (!identity) {
     return (
@@ -1298,7 +1494,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
               >
                 {mode === '2d' ? (
                   <ViewGraph2D
-                    nodes={flattenedNodes}
+                    nodes={visibleFlattenedNodes}
                     selectedNodeKey={selectedNodeKey}
                     onSelect={setSelectedNodeKey}
                     showConnections={false}
@@ -1308,7 +1504,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                   />
                 ) : (
                   <ViewGraph3D
-                    nodes={flattenedNodes}
+                    nodes={visibleFlattenedNodes}
                     selectedNodeKey={selectedNodeKey}
                     onSelect={setSelectedNodeKey}
                     showConnections={false}
@@ -1395,6 +1591,14 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
               >
                 显示连线
               </button>
+              <div className="divider" />
+              <button
+                style={{ height: '22px' }}
+                onClick={clearHiddenNodes}
+                disabled={hiddenNodeKeys.length === 0}
+              >
+                显示全部
+              </button>
             </div>
             <span className="status-pill">{loading ? 'LOADING' : useMockSnapshot ? 'MOCK' : 'READY'}</span>
           </div>
@@ -1404,8 +1608,9 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
           {/* 左侧：组件树 */}
           <aside className="view-sidebar" style={{ width: '280px' }}>
             <div className="view-tree-meta">
-              <span>Nodes: {flattenedNodes.length}</span>
+              <span>Nodes: {visibleFlattenedNodes.length}/{flattenedNodes.length}</span>
               <span>Depth: {maxDepth}</span>
+              <span>Hidden: {hiddenNodeKeys.length}</span>
               {snapshot ? <span>Snapshot: {snapshot.snapshotId}</span> : null}
             </div>
             <div style={{ flex: 1, overflow: 'auto', padding: '0.25rem 0' }}>
@@ -1417,6 +1622,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                       node={node}
                       path={`root.${String(index)}`}
                       selectedNodeKey={selectedNodeKey}
+                      hiddenNodeKeys={hiddenNodeKeys}
                       onSelect={setSelectedNodeKey}
                     />
                   ))}
@@ -1435,7 +1641,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
               <>
                 {mode === '2d' ? (
                   <ViewGraph2D
-                    nodes={flattenedNodes}
+                    nodes={visibleFlattenedNodes}
                     selectedNodeKey={selectedNodeKey}
                     onSelect={setSelectedNodeKey}
                     showConnections={showConnections}
@@ -1445,7 +1651,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                   />
                 ) : (
                   <ViewGraph3D
-                    nodes={flattenedNodes}
+                    nodes={visibleFlattenedNodes}
                     selectedNodeKey={selectedNodeKey}
                     onSelect={setSelectedNodeKey}
                     showConnections={showConnections}
@@ -1467,6 +1673,18 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                   <PropertyRow label="ID" value={selectedNode.id} />
                   <PropertyRow label="Depth" value={selectedNode.depth} />
                   <PropertyRow label="Visible" value={selectedNode.visible !== false ? 'True' : 'False'} />
+                  <PropertyRow label="Hidden In Canvas" value={selectedNodeHidden ? 'True' : 'False'} />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px', gap: '6px' }}>
+                    {selectedNodeHidden ? (
+                      <button type="button" className="mode-btn" onClick={unhideSelectedNode} style={{ height: '24px', padding: '0 10px' }}>
+                        取消隐藏
+                      </button>
+                    ) : (
+                      <button type="button" className="mode-btn" onClick={hideSelectedNode} style={{ height: '24px', padding: '0 10px' }}>
+                        隐藏节点
+                      </button>
+                    )}
+                  </div>
                 </PropertySection>
 
                 {selectedNode.frame && (
@@ -1482,6 +1700,16 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
 
                 {selectedNode.rawNode != null && (
                   <PropertySection title="Raw Node" defaultOpen={false}>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '8px' }}>
+                      <button
+                        type="button"
+                        className="mode-btn"
+                        onClick={() => { void copyRawNode() }}
+                        style={{ height: '24px', padding: '0 10px' }}
+                      >
+                        {rawNodeCopyState === 'done' ? '已复制' : rawNodeCopyState === 'error' ? '复制失败' : '复制 JSON'}
+                      </button>
+                    </div>
                     <pre className="prop-json">
                       {JSON.stringify(selectedNode.rawNode, null, 2)}
                     </pre>
