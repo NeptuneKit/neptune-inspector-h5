@@ -220,8 +220,13 @@ function parseHexAlpha(color: string | undefined): number | null {
   if (!color) {
     return null
   }
-  const normalized = color.trim()
+  const normalized = color.trim().toLowerCase()
+  if (normalized === 'transparent' || normalized === 'none' || normalized === '#00000000') {
+    return 0
+  }
   if (!normalized.startsWith('#')) {
+    // If it's not a hex color but not "transparent", we don't know for sure, 
+    // but common CSS names like "white", "red" etc are visible.
     return null
   }
   const raw = normalized.slice(1)
@@ -232,6 +237,9 @@ function parseHexAlpha(color: string | undefined): number | null {
   if (raw.length === 4) {
     const alpha = Number.parseInt(raw.slice(3, 4).repeat(2), 16)
     return Number.isFinite(alpha) ? alpha / 255 : null
+  }
+  if (raw.length === 6 || raw.length === 3) {
+    return 1
   }
   return 1
 }
@@ -244,11 +252,12 @@ function hasVisibleVisualStyle(style: ViewTreeNode['style'] | undefined): boolea
   if (opacity !== undefined && opacity <= 0) {
     return false
   }
+  
   const bgAlpha = parseHexAlpha(style.backgroundColor)
-  const hasBg = style.backgroundColor !== undefined && (bgAlpha === null || bgAlpha > 0)
+  const hasBg = style.backgroundColor !== undefined && bgAlpha !== 0
 
   const borderAlpha = parseHexAlpha(style.borderColor)
-  const hasBorder = (style.borderWidth ?? 0) > 0 && style.borderColor !== undefined && (borderAlpha === null || borderAlpha > 0)
+  const hasBorder = (style.borderWidth ?? 0) > 0 && style.borderColor !== undefined && borderAlpha !== 0
 
   return hasBg || hasBorder
 }
@@ -298,9 +307,6 @@ function isVisuallyRenderableNode(node: FlattenedViewNode, platform: RenderPlatf
     !hasVisibleVisualStyle(node.style)
   ) {
     return false
-  }
-  if (node.depth <= 1) {
-    return true
   }
   return false
 }
@@ -501,12 +507,26 @@ function ViewTreeNodeItem({
   hideTransparent: boolean
 }) {
   const [collapsed, setCollapsed] = useState(false)
+  const itemRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!selectedNodeKey) return
+
+    if (selectedNodeKey.startsWith(`${path}.`)) {
+      setCollapsed(false)
+    }
+
+    if (path === selectedNodeKey && itemRef.current) {
+      itemRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [selectedNodeKey, path])
+
   const hasChildren = node.children.length > 0
   const relation = relationOfNode(path, selectedNodeKey)
   const hidden = isNodeKeyHidden(path, hiddenNodeKeys)
 
   const isTransparent = isTransparentNode(node)
-  if (hideTransparent && isTransparent) {
+  if (hideTransparent && isTransparent && relation !== 'selected' && relation !== 'ancestor') {
     const visibleInDescendants = hasVisibleDescendant(node)
     if (!visibleInDescendants) {
       return null
@@ -516,7 +536,7 @@ function ViewTreeNodeItem({
 
   return (
     <li>
-      <div className={`view-tree-row relation-${relation}`} style={{ padding: '0.15rem 0.25rem' }}>
+      <div ref={itemRef} className={`view-tree-row relation-${relation}`} style={{ padding: '0.1rem 0', display: 'flex', alignItems: 'center' }}>
         {hasChildren ? (
           <button
             type="button"
@@ -528,20 +548,23 @@ function ViewTreeNodeItem({
               background: 'transparent',
               border: 'none',
               color: 'var(--text-dim)',
-              padding: '0 2px',
+              padding: 0,
               cursor: 'pointer',
               fontSize: '8px',
               transform: collapsed ? 'rotate(-90deg)' : 'rotate(0deg)',
               transition: 'transform 0.2s',
-              width: '14px',
+              width: '12px',
+              height: '12px',
               display: 'flex',
-              justifyContent: 'center'
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
             }}
           >
             ▼
           </button>
         ) : (
-          <div style={{ width: '14px' }} />
+          <div style={{ width: '12px', flexShrink: 0 }} />
         )}
         <button
           type="button"
@@ -555,7 +578,7 @@ function ViewTreeNodeItem({
             padding: '2px 0',
             display: 'flex',
             alignItems: 'center',
-            gap: '4px',
+            gap: '2px',
             overflow: 'hidden'
           }}
         >
@@ -642,9 +665,6 @@ function flattenViewTree(roots: ViewTreeNode[]): FlattenedViewNode[] {
 function shouldParticipateInSceneBounds(node: FlattenedViewNode, platform: RenderPlatform): boolean {
   if (isLayerLikeNodeName(node.name)) {
     return false
-  }
-  if (node.depth <= 1) {
-    return true
   }
   return isVisuallyRenderableNode(node, platform)
 }
@@ -809,14 +829,28 @@ function ViewGraph({
         if (isLayerLikeNodeName(item.node.name)) {
           return false
         }
-        const relation = relationOfNode(item.node.keyPath, selectedNodeKey)
-        if (relation !== 'none') {
+        // Always keep the selected node even if it's transparent
+        if (item.node.keyPath === selectedNodeKey) {
           return true
         }
-        if (hideTransparent && isTransparentNode(item.node)) {
+
+        const isTransparent = isTransparentNode(item.node)
+        if (hideTransparent && isTransparent) {
           return false
         }
-        return isVisuallyRenderableNode(item.node, platform)
+
+        // Basic visibility checks for all nodes
+        if (isPlatformNoiseNode(item.node, platform)) return false
+        if (item.node.visible === false) return false
+        if (!item.node.frame || item.node.frame.width <= 0 || item.node.frame.height <= 0) return false
+
+        if (hideTransparent) {
+          // If hideTransparent is ON, we only show nodes that actually have visual content
+          return isVisuallyRenderableNode(item.node, platform)
+        }
+        
+        // If hideTransparent is OFF, we show all nodes that passed basic visibility checks
+        return true
       }),
     [positionedNodes, selectedNodeKey, platform, hideTransparent],
   )
@@ -1099,8 +1133,8 @@ function ViewGraph({
                   paddingBottom: toPixelLength(renderStyle?.paddingBottom),
                   paddingLeft: toPixelLength(renderStyle?.paddingLeft),
                   clipPath: clipPathByNodeKey.get(positioned.node.keyPath),
-                  outline: mode === '3d' ? '1px solid rgba(255,255,255,0.1)' : undefined,
-                  boxShadow: mode === '3d' ? (relation === 'selected' ? undefined : '0 2px 8px rgba(0,0,0,0.4)') : undefined,
+                  outline: mode === '3d' && (!isTransparent || relation === 'selected') ? '1px solid rgba(255,255,255,0.1)' : undefined,
+                  boxShadow: mode === '3d' && (!isTransparent || relation === 'selected') ? (relation === 'selected' ? undefined : '0 2px 8px rgba(0,0,0,0.4)') : undefined,
                   transition: 'transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.6s, background-color 0.6s, box-shadow 0.6s, outline 0.6s',
                   transformStyle: 'preserve-3d',
                   backfaceVisibility: 'hidden',

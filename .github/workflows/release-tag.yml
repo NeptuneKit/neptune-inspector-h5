@@ -59,10 +59,40 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.release_tag.outputs.tag_name }}
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Build desktop dist assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/build-desktop-assets.sh
+
+      - name: Package dist zip
+        id: dist_zip
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_name="${{ steps.release_tag.outputs.tag_name }}"
+          mkdir -p dist/release
+          archive_name="neptune-inspector-h5-dist-${tag_name}.zip"
+          # Keep the top-level dist/ directory in archive so desktop resolver can
+          # locate dist/index.html after unzip.
+          /usr/bin/zip -r "dist/release/${archive_name}" dist
+          /usr/bin/shasum -a 256 "dist/release/${archive_name}" > "dist/release/${archive_name}.sha256"
+          printf 'archive_name=%s\n' "${archive_name}" >> "${GITHUB_OUTPUT}"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_tag.outputs.tag_name }}
+          files: |
+            dist/release/${{ steps.dist_zip.outputs.archive_name }}
+            dist/release/${{ steps.dist_zip.outputs.archive_name }}.sha256
+          fail_on_unmatched_files: true
           generate_release_notes: true
           draft: ${{ inputs.draft || false }}
           prerelease: ${{ inputs.prerelease || false }}
