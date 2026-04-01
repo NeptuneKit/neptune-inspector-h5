@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import { normalizeBaseUrl } from '../api'
 import { decodeClientKey } from '../features/clients/clientKey'
 import { canonicalFontWeight } from '../features/views/typography'
 import { fetchMockViewSnapshot, fetchViewSnapshot, type MockPlatform } from '../features/views/viewService'
 import { safeStorageGet } from '../storage'
 import type { ViewTreeNode, ViewTreeSnapshot } from '../types'
 import { BASE_URL_STORAGE_KEY, DEFAULT_BASE_URL } from '../shared/constants'
+import { resolveInitialBaseUrl } from '../shared/gateway'
 
 type ViewRenderMode = '2d' | '3d'
 type ViewIdentity = ReturnType<typeof decodeClientKey>
@@ -102,9 +102,6 @@ function computeNodeClipPath(
     return 'inset(50%)'
   }
 
-  if (maxAncestorRadius > 0) {
-    return `inset(${String(top)}px ${String(right)}px ${String(bottom)}px ${String(left)}px round ${String(maxAncestorRadius)}px)`
-  }
   return `inset(${String(top)}px ${String(right)}px ${String(bottom)}px ${String(left)}px)`
 }
 
@@ -517,7 +514,7 @@ function ViewTreeNodeItem({
     }
 
     if (path === selectedNodeKey && itemRef.current) {
-      itemRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      itemRef.current.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' })
     }
   }, [selectedNodeKey, path])
 
@@ -781,6 +778,7 @@ interface ViewGraphProps {
   nodes: FlattenedViewNode[]
   selectedNodeKey: string | null
   onSelect: (nodeKey: string) => void
+  onContextMenu: (e: React.MouseEvent, nodeKey: string) => void
   showConnections: boolean
   hideTransparent: boolean
   platform: RenderPlatform
@@ -990,6 +988,9 @@ function ViewGraph({
 
   const sceneWidth = scene.bounds?.width ?? 980
   const sceneHeight = scene.bounds?.height ?? 640
+  const viewportWidth = scene.bounds?.viewportWidth ?? sceneWidth
+  const viewportHeight = scene.bounds?.viewportHeight ?? sceneHeight
+  
   const stageBackgroundColor = useMemo(
     () => mode === '2d' ? inferStageBackgroundColor(renderableNodes, platform) : 'transparent',
     [renderableNodes, platform, mode],
@@ -1008,7 +1009,7 @@ function ViewGraph({
       style={{ 
         overflow: 'hidden', 
         cursor: 'grab', 
-        background: mode === '3d' ? 'radial-gradient(circle at 50% 50%, #1e293b 0%, #020617 100%)' : undefined, 
+        background: mode === '3d' ? 'radial-gradient(circle at 50% 50%, #1e293b 0%, #020617 100%)' : '#05070a', 
         perspective: '2000px',
         perspectiveOrigin: '50% 50%',
         position: 'relative',
@@ -1036,7 +1037,7 @@ function ViewGraph({
           transformOrigin: '50% 50%',
           transformStyle: 'preserve-3d',
           transition: dragRef.current.isDragging ? 'none' : 'transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.6s ease',
-          backgroundColor: stageBackgroundColor,
+          backgroundColor: 'transparent',
           position: 'absolute',
           left: 0,
           top: 0,
@@ -1057,6 +1058,22 @@ function ViewGraph({
             backfaceVisibility: 'hidden',
           }}
         >
+          {/* Viewport Background (Inside Screen) */}
+          <div 
+            className="view-viewport-background"
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: `${String(viewportWidth)}px`,
+              height: `${String(viewportHeight)}px`,
+              backgroundColor: stageBackgroundColor,
+              zIndex: -1,
+              pointerEvents: 'none',
+              transform: 'translateZ(-1px)',
+              transition: 'background-color 0.6s ease',
+            }}
+          />
           {showConnections ? (
             <svg className="view-links-layer" width={sceneWidth} height={sceneHeight} aria-hidden="true" style={{ transform: 'translateZ(1px)' }}>
               {viewEdges.map((edge) => (
@@ -1145,6 +1162,11 @@ function ViewGraph({
                   e.stopPropagation()
                   onSelect(positioned.node.keyPath)
                 }}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  onContextMenu(e, positioned.node.keyPath)
+                }}
               >
                 {positioned.node.text ? (
                   <span
@@ -1189,10 +1211,15 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
     }
     return decodeClientKey(clientKey)
   }, [clientKey, mockOnly, mockPlatform])
-  const [baseUrl] = useState(() => normalizeBaseUrl(safeStorageGet(BASE_URL_STORAGE_KEY) ?? DEFAULT_BASE_URL))
+  const [baseUrl] = useState(() => resolveInitialBaseUrl(
+    safeStorageGet(BASE_URL_STORAGE_KEY),
+    DEFAULT_BASE_URL,
+  ))
   const [snapshot, setSnapshot] = useState<ViewTreeSnapshot | null>(null)
   const [mode, setMode] = useState<ViewRenderMode>('2d')
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null)
+  const [focusedNodeKey, setFocusedNodeKey] = useState<string | null>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, nodeKey: string } | null>(null)
   const [hiddenNodeKeys, setHiddenNodeKeys] = useState<string[]>([])
   const [showConnections, setShowConnections] = useState(false)
   const [hideTransparent, setHideTransparent] = useState(false)
@@ -1288,9 +1315,17 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
   }, [loadSnapshot])
 
   const flattenedNodes = useMemo(() => flattenViewTree(snapshot?.roots ?? []), [snapshot])
+
+  const focusedFlattenedNodes = useMemo(() => {
+    if (!focusedNodeKey) return flattenedNodes
+    return flattenedNodes.filter(node => 
+      node.keyPath === focusedNodeKey || node.keyPath.startsWith(`${focusedNodeKey}.`)
+    )
+  }, [flattenedNodes, focusedNodeKey])
+
   const visibleFlattenedNodes = useMemo(
-    () => flattenedNodes.filter((node) => !isNodeKeyHidden(node.keyPath, hiddenNodeKeys)),
-    [flattenedNodes, hiddenNodeKeys],
+    () => focusedFlattenedNodes.filter((node) => !isNodeKeyHidden(node.keyPath, hiddenNodeKeys)),
+    [focusedFlattenedNodes, hiddenNodeKeys],
   )
   const selectedNode = useMemo(
     () => flattenedNodes.find((node) => node.keyPath === selectedNodeKey) ?? null,
@@ -1520,6 +1555,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                   nodes={visibleFlattenedNodes}
                   selectedNodeKey={selectedNodeKey}
                   onSelect={setSelectedNodeKey}
+                  onContextMenu={(e, nodeKey) => setContextMenu({ x: e.clientX, y: e.clientY, nodeKey })}
                   showConnections={false}
                   hideTransparent={hideTransparent}
                   platform={snapshot.platform as RenderPlatform}
@@ -1592,6 +1628,14 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
           ) : null}
           <div className="button-group" style={{ height: '28px', padding: '2px' }}>
             <button style={{ height: '22px' }} onClick={() => void loadSnapshot(true)}>Refresh Snapshot</button>
+            <div className="divider" />
+            <button
+              style={{ height: '22px', color: focusedNodeKey ? 'var(--accent-blue)' : 'inherit' }}
+              onClick={() => setFocusedNodeKey(null)}
+              disabled={!focusedNodeKey}
+            >
+              Reset Focus
+            </button>
             <div className="divider" />
             <button 
               style={{ height: '22px', color: showConnections ? 'var(--accent-blue)' : 'inherit' }} 
@@ -1675,6 +1719,7 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                 nodes={visibleFlattenedNodes}
                 selectedNodeKey={selectedNodeKey}
                 onSelect={setSelectedNodeKey}
+                onContextMenu={(e, nodeKey) => setContextMenu({ x: e.clientX, y: e.clientY, nodeKey })}
                 showConnections={showConnections}
                 hideTransparent={hideTransparent}
                 platform={snapshot.platform as RenderPlatform}
@@ -1686,6 +1731,46 @@ export function ViewInfoPage({ mockOnly = false, mockPlatform = 'harmony', repla
                 setRotation={setRotation}
                 containerRef={containerRef}
               />
+            )}
+
+            {/* Custom Context Menu */}
+            {contextMenu && (
+              <div 
+                style={{
+                  position: 'fixed',
+                  left: contextMenu.x,
+                  top: contextMenu.y,
+                  zIndex: 1000000,
+                  background: 'var(--surface-raised)',
+                  border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-md)',
+                  boxShadow: '0 10px 30px -5px rgba(0, 0, 0, 0.6)',
+                  padding: '4px',
+                  minWidth: '140px'
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button 
+                  style={{ width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', padding: '8px 12px', color: 'var(--text)', fontSize: '0.75rem', fontWeight: 600, borderRadius: '4px' }}
+                  onClick={() => {
+                    setFocusedNodeKey(contextMenu.nodeKey)
+                    setContextMenu(null)
+                  }}
+                >
+                  Focus on Node
+                </button>
+                {focusedNodeKey && (
+                  <button 
+                    style={{ width: '100%', background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', padding: '8px 12px', borderTop: '1px solid var(--border)', color: 'var(--text-dim)', fontSize: '0.75rem' }}
+                    onClick={() => {
+                      setFocusedNodeKey(null)
+                      setContextMenu(null)
+                    }}
+                  >
+                    Reset Focus
+                  </button>
+                )}
+              </div>
             )}
           </section>
           

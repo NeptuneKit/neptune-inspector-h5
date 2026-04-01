@@ -38,9 +38,13 @@ describe('view service', () => {
         },
       ],
     }
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => payload }))
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => payload })
+    vi.stubGlobal('fetch', fetchMock)
 
     await expect(fetchViewSnapshot('http://127.0.0.1:18765', identity)).resolves.toEqual(payload)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:18765/v2/ui-tree/snapshot?platform=ios&appId=com.demo.app&sessionId=session-1&deviceId=device-1',
+    )
   })
 
   it('builds the inspector snapshot endpoint url using only deviceId', () => {
@@ -59,5 +63,20 @@ describe('view service', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => payload }))
 
     await expect(fetchInspectorSnapshot('http://127.0.0.1:18765', identity)).resolves.toEqual(payload)
+  })
+
+  it('maps offline snapshot 404 into actionable message', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({
+        error: true,
+        reason: 'Requested client is offline; no live ui-tree snapshot available.',
+      }),
+    }))
+
+    await expect(fetchViewSnapshot('http://127.0.0.1:18765', identity))
+      .rejects
+      .toThrow('当前客户端离线或未上报实时 UI 树快照，请先连接设备并触发页面刷新后重试。')
   })
 })
